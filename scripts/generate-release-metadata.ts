@@ -34,7 +34,7 @@ import { readProtocolVersions } from './read-protocol-versions.js';
  */
 export interface ReleaseMetadata {
   /** Identifier of the per-language artifact, e.g. `"rust"`, `"kotlin"`. */
-  readonly client: 'rust' | 'kotlin' | 'swift' | 'typescript' | 'go' | 'dotnet';
+  readonly client: 'rust' | 'kotlin' | 'swift' | 'typescript' | 'go';
   /** Native package version of the checked-in source. */
   readonly packageVersion: string;
   /**
@@ -98,16 +98,7 @@ export function readGoPackageVersion(versionFile: string): string {
   return trimmed;
 }
 
-/** Reads the bare-semver .NET package version from the VERSION file. */
-export function readDotnetPackageVersion(versionFile: string): string {
-  const trimmed = versionFile.trim();
-  if (trimmed.length === 0) {
-    throw new Error('readDotnetPackageVersion: VERSION file is empty');
-  }
-  return trimmed;
-}
-
-const CLIENTS = ['rust', 'kotlin', 'swift', 'typescript', 'go', 'dotnet'] as const;
+const CLIENTS = ['rust', 'kotlin', 'swift', 'typescript', 'go'] as const;
 
 interface ClientLocation {
   readonly metadataPath: string;
@@ -155,13 +146,6 @@ function clientLocations(rootDir: string): Record<(typeof CLIENTS)[number], Clie
       readVersion: (root) =>
         readGoPackageVersion(
           fs.readFileSync(path.join(root, 'clients', 'go', 'VERSION'), 'utf-8'),
-        ),
-    },
-    dotnet: {
-      metadataPath: path.join(rootDir, 'clients', 'dotnet', 'release-metadata.json'),
-      readVersion: (root) =>
-        readDotnetPackageVersion(
-          fs.readFileSync(path.join(root, 'clients', 'dotnet', 'VERSION'), 'utf-8'),
         ),
     },
   };

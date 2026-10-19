@@ -40,21 +40,6 @@ function schemaLink(schemaFile: string): string {
   return `<a href="${SCHEMA_BASE}/${schemaFile}" target="_blank">JSON Schema: <code>${schemaFile}</code></a>\n`;
 }
 
-function stabilityIndex(sourceFile: SourceFile | undefined): string {
-  if (!sourceFile) {
-    throw new Error('Cannot generate a channel stability index without a state source file');
-  }
-
-  const match = sourceFile.getFullText().match(
-    /^\s*\*\s+Stability:\s+(0|1(?:\.[0-2])?|2|3)\s+-\s+.+$/m,
-  );
-  if (!match) {
-    throw new Error(`Missing channel stability index in ${sourceFile.getFilePath()}`);
-  }
-
-  return `<StabilityIndex level="${match[1]}" />\n`;
-}
-
 // ─── Type → Page Mapping ─────────────────────────────────────────────────────
 
 /**
@@ -67,14 +52,10 @@ const DIR_TO_PAGE: Record<string, string> = {
   'channels-root': 'root',
   'channels-session': 'session',
   'channels-chat': 'chat',
-  'channels-canvas': 'canvas',
   'channels-terminal': 'terminal',
   'channels-changeset': 'changeset',
   'channels-annotations': 'annotations',
-  'channels-resource-watch': 'resource-watch',
   'channels-otlp': 'otlp',
-  'channels-automation': 'automation',
-  'channels-automation-run': 'automation-run',
 };
 
 /**
@@ -911,7 +892,6 @@ function generateRootChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Root Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-root://` channel — the single, host-wide channel every client subscribes to first. See [Root Channel specification](/specification/root-channel) for the wire-level overview.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -946,7 +926,6 @@ function generateSessionChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Session Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-session:/<uuid>` channel — per-session state, the turn lifecycle, tool-call state machine, attachments, pending messages, input requests, and per-session customizations. See [Session Channel specification](/specification/session-channel) for the wire-level overview.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -976,7 +955,6 @@ function generateChatChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Chat Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-chat:/<uuid>` channel — per-chat state, the turn lifecycle, tool-call state machine, attachments, pending messages, and input requests. A chat belongs to a session (see [Session Channel](/reference/session)); a session may contain multiple chats. See [Chat Channel specification](/specification/chat-channel) for the wire-level overview.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -998,30 +976,6 @@ function generateChatChannelPage(project: Project): string {
   return lines.join('\n');
 }
 
-function generateCanvasChannelPage(project: Project): string {
-  currentPage = 'canvas';
-  const stateSf = findChannelSourceFile(project, 'channels-canvas', 'state.ts');
-  const actionsSf = findChannelSourceFile(project, 'channels-canvas', 'actions.ts');
-
-  const lines: string[] = [GENERATED_HEADER];
-  lines.push('# Canvas Channel\n');
-  lines.push(stabilityIndex(stateSf));
-  lines.push('Reference for the experimental `ahp-canvas:` channel. Chat state advertises minimal canvas resource references; clients subscribe to each resource for its live presentation metadata and HTTP(S) source URL. A missing URL means the source is unavailable. Source URLs must be redacted from diagnostic logs and must not be reused from persisted state after provider or host restart.\n');
-  lines.push(schemaLink('state.schema.json'));
-
-  if (stateSf) {
-    lines.push('## State Types\n');
-    lines.push(emitStateTypesSection([stateSf]));
-  }
-  if (actionsSf) {
-    lines.push('## Actions\n');
-    lines.push('Replace `CanvasState` through server-authoritative actions scoped to the canvas URI via `ActionEnvelope.channel`.\n');
-    lines.push(schemaLink('actions.schema.json'));
-    lines.push(emitActionsSection([actionsSf]));
-  }
-  return lines.join('\n');
-}
-
 function generateTerminalChannelPage(project: Project): string {
   currentPage = 'terminal';
   const stateSf = findChannelSourceFile(project, 'channels-terminal', 'state.ts');
@@ -1030,7 +984,6 @@ function generateTerminalChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Terminal Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-terminal:/<id>` channel — long-lived pseudo-terminals that can be attached to clients and/or sessions. See [Terminal Channel specification](/specification/terminal-channel) for the wire-level overview.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -1060,7 +1013,6 @@ function generateChangesetChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Changeset Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-changeset:/<id>` channel — server-owned views of file changes (uncommitted, session-wide, per-turn, etc.) that clients can subscribe to and invoke operations on. See the [Changesets guide](/guide/changesets) for an overview of the model.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -1090,7 +1042,6 @@ function generateAnnotationsChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Annotations Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-session:/<uuid>/annotations` channel — per-session annotations anchored to file ranges within a session turn. Clients (and the agent host) mutate annotations by dispatching the client-dispatchable `annotations/*` state actions, which the write-ahead reducer applies identically on both peers.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -1112,36 +1063,6 @@ function generateAnnotationsChannelPage(project: Project): string {
   return lines.join('\n');
 }
 
-function generateResourceWatchChannelPage(project: Project): string {
-  currentPage = 'resource-watch';
-  const stateSf = findChannelSourceFile(project, 'channels-resource-watch', 'state.ts');
-  const actionsSf = findChannelSourceFile(project, 'channels-resource-watch', 'actions.ts');
-  const commandsSf = findChannelSourceFile(project, 'channels-resource-watch', 'commands.ts');
-
-  const lines: string[] = [GENERATED_HEADER];
-  lines.push('# Resource Watch Channel\n');
-  lines.push(stabilityIndex(stateSf));
-  lines.push('Reference for `ahp-resource-watch:/<id>` channels — short-lived, per-connection filesystem watches that deliver batched change actions. See [Resource Watch Channel specification](/specification/resource-watch-channel) for lifecycle and subscription semantics.\n');
-  lines.push(schemaLink('state.schema.json'));
-
-  if (stateSf) {
-    lines.push('## State Types\n');
-    lines.push(emitStateTypesSection([stateSf]));
-  }
-  if (actionsSf) {
-    lines.push('## Actions\n');
-    lines.push('Deliver resource changes on a watch channel. Watch state itself is immutable.\n');
-    lines.push(schemaLink('actions.schema.json'));
-    lines.push(emitActionsSection([actionsSf]));
-  }
-  if (commandsSf) {
-    lines.push('## Commands\n');
-    lines.push(schemaLink('commands.schema.json'));
-    lines.push(emitCommandsSection(project, [commandsSf]));
-  }
-  return lines.join('\n');
-}
-
 function generateOtlpChannelPage(project: Project): string {
   currentPage = 'otlp';
   const stateSf = findChannelSourceFile(project, 'channels-otlp', 'state.ts');
@@ -1149,7 +1070,6 @@ function generateOtlpChannelPage(project: Project): string {
 
   const lines: string[] = [GENERATED_HEADER];
   lines.push('# Telemetry Channel\n');
-  lines.push(stabilityIndex(stateSf));
   lines.push('Reference for the `ahp-otlp:` channels — stateless channels that pass OpenTelemetry logs, traces, and metrics from the agent host to subscribed clients as [OTLP/JSON](https://github.com/open-telemetry/opentelemetry-proto) payloads. See [Telemetry Channel specification](/specification/telemetry-channel) for the wire-level overview, including URI templates and severity filtering.\n');
   lines.push(schemaLink('state.schema.json'));
 
@@ -1158,7 +1078,6 @@ function generateOtlpChannelPage(project: Project): string {
     lines.push('The `ahp-otlp:` channels are stateless; the only state type is the capability descriptor the host advertises on `InitializeResult.telemetry`.\n');
     lines.push(emitStateTypesSection([stateSf]));
   }
-
   if (notificationsSf) {
     lines.push('## Notifications\n');
     lines.push(schemaLink('notifications.schema.json'));
@@ -1166,7 +1085,6 @@ function generateOtlpChannelPage(project: Project): string {
   }
   return lines.join('\n');
 }
-
 
 // ─── Error Codes Page ────────────────────────────────────────────────────────
 
@@ -1371,60 +1289,6 @@ function generateMessagesPage(project: Project): string {
   return lines.join('\n');
 }
 
-function generateAutomationChannelPage(project: Project): string {
-  currentPage = 'automation';
-  const stateSf = findChannelSourceFile(project, 'channels-automation', 'state.ts');
-  const actionsSf = findChannelSourceFile(project, 'channels-automation', 'actions.ts');
-  const commandsSf = findChannelSourceFile(project, 'channels-automation', 'commands.ts');
-  const lines: string[] = [
-    GENERATED_HEADER,
-    '# Automation Catalogue Channel\n',
-    stabilityIndex(stateSf),
-    schemaLink('state.schema.json'),
-  ];
-  if (stateSf) {
-    lines.push('## State Types\n', emitStateTypesSection([stateSf]));
-  }
-  if (actionsSf) {
-    lines.push('## Actions\n', schemaLink('actions.schema.json'), emitActionsSection([actionsSf]));
-  }
-  if (commandsSf) {
-    lines.push('## Commands\n', schemaLink('commands.schema.json'), emitCommandsSection(project, [commandsSf]));
-  }
-  return lines.join('\n');
-}
-
-function generateAutomationRunChannelPage(project: Project): string {
-  currentPage = 'automation-run';
-  const stateSf = findChannelSourceFile(project, 'channels-automation-run', 'state.ts');
-  const actionsSf = findChannelSourceFile(project, 'channels-automation-run', 'actions.ts');
-  const lines: string[] = [
-    GENERATED_HEADER,
-    '# Automation Run Channel\n',
-    stabilityIndex(stateSf),
-    schemaLink('state.schema.json'),
-  ];
-  if (stateSf) {
-    lines.push('## State Types\n', emitStateTypesSection([stateSf]));
-  }
-  if (actionsSf) {
-    lines.push('## Actions\n', schemaLink('actions.schema.json'), emitActionsSection([actionsSf]));
-  }
-  return lines.join('\n');
-}
-
-function generateMcpChannelPage(_project: Project): string {
-  currentPage = 'mcp';
-  const lines: string[] = [GENERATED_HEADER];
-  lines.push('# MCP Channel\n');
-  lines.push('<StabilityIndex level="1.2" />\n');
-  lines.push('Reference for the optional `mcp://` side-channel. See the [MCP Channel specification](/specification/mcp-channel) for routing, lifecycle, and normative requirements.\n');
-  lines.push('## Wire Surface\n');
-  lines.push('The channel carries [MCP](https://modelcontextprotocol.io/specification) JSON-RPC requests, responses, and notifications verbatim. AHP does not redeclare those upstream wire shapes, so there are no AHP JSON Schemas for this page.\n');
-  lines.push('The AHP-defined surface consists of the top-level `channel` routing key and capability advertisements on the owning customization. The currently defined capability set is [`AhpMcpUiHostCapabilities`](/reference/session#ahpmcpuihostcapabilities).\n');
-  return lines.join('\n');
-}
-
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export function generateMarkdownDocs(project: Project, outDir: string): void {
@@ -1438,15 +1302,10 @@ export function generateMarkdownDocs(project: Project, outDir: string): void {
     { filename: 'root.md', generator: generateRootChannelPage },
     { filename: 'session.md', generator: generateSessionChannelPage },
     { filename: 'chat.md', generator: generateChatChannelPage },
-    { filename: 'canvas.md', generator: generateCanvasChannelPage },
     { filename: 'terminal.md', generator: generateTerminalChannelPage },
     { filename: 'changeset.md', generator: generateChangesetChannelPage },
     { filename: 'annotations.md', generator: generateAnnotationsChannelPage },
-    { filename: 'resource-watch.md', generator: generateResourceWatchChannelPage },
     { filename: 'otlp.md', generator: generateOtlpChannelPage },
-    { filename: 'automation.md', generator: generateAutomationChannelPage },
-    { filename: 'automation-run.md', generator: generateAutomationRunChannelPage },
-    { filename: 'mcp.md', generator: generateMcpChannelPage },
     { filename: 'messages.md', generator: generateMessagesPage },
     { filename: 'error-codes.md', generator: generateErrorCodesPage },
   ];

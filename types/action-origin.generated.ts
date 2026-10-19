@@ -12,7 +12,6 @@ import type {
   SessionChatAddedAction,
   SessionChatRemovedAction,
   SessionChatUpdatedAction,
-  SessionChatsReorderedAction,
   SessionDefaultChatChangedAction,
   SessionTitleChangedAction,
   SessionServerToolsChangedAction,
@@ -20,7 +19,6 @@ import type {
   SessionActiveClientRemovedAction,
   SessionWorkingDirectorySetAction,
   SessionWorkingDirectoryRemovedAction,
-  SessionWorkingDirectoryReplacedAction,
   SessionInputNeededSetAction,
   SessionInputNeededRemovedAction,
   SessionCustomizationsChangedAction,
@@ -30,7 +28,6 @@ import type {
   SessionMcpServerStateChangedAction,
   SessionMcpServerStartRequestedAction,
   SessionMcpServerStopRequestedAction,
-  SessionMcpServerBackgroundRequestedAction,
   SessionIsReadChangedAction,
   SessionIsArchivedChangedAction,
   SessionActivityChangedAction,
@@ -52,14 +49,7 @@ import type {
   ChatTurnCompleteAction,
   ChatTurnCancelledAction,
   ChatErrorAction,
-  ChatTurnResumeAction,
   ChatActivityChangedAction,
-  ChatBackgroundWorkSetAction,
-  ChatBackgroundWorkRemovedAction,
-  ChatMovableChangedAction,
-  ChatChangesetsChangedAction,
-  ChatCanvasesChangedAction,
-  CanvasStateChangedAction,
   ChatWorkingDirectorySetAction,
   ChatWorkingDirectoryRemovedAction,
   ChatUsageAction,
@@ -68,8 +58,6 @@ import type {
   ChatPendingMessageRemovedAction,
   ChatQueuedMessagesReorderedAction,
   ChatDraftChangedAction,
-  ChatIsReadChangedAction,
-  ChatIsArchivedChangedAction,
   ChatInputRequestedAction,
   ChatInputAnswerChangedAction,
   ChatInputCompletedAction,
@@ -100,20 +88,11 @@ import type {
   TerminalCommandExecutedAction,
   TerminalCommandFinishedAction,
   ResourceWatchChangedAction,
-  AutomationCreateRequestedAction,
-  AutomationUpdateRequestedAction,
-  AutomationSetAction,
-  AutomationRemovedAction,
-  AutomationRunLifecycleChangedAction,
-  AutomationRunSessionSetAction,
-  AutomationRunSessionRemovedAction,
-  AutomationRunPrimarySessionChangedAction,
-  AutomationRunCancelRequestedAction,
 } from './actions.js';
 
 import { ActionType } from './actions.js';
 
-// ─── Per-channel Action Unions ───────────────────────────────────────────────
+// ─── Root vs Session vs Chat vs Terminal vs Changeset Action Unions ─────────────────
 
 /** Union of all root-scoped actions. */
 export type RootAction =
@@ -142,7 +121,6 @@ export type SessionAction =
   | SessionChatAddedAction
   | SessionChatRemovedAction
   | SessionChatUpdatedAction
-  | SessionChatsReorderedAction
   | SessionDefaultChatChangedAction
   | SessionTitleChangedAction
   | SessionServerToolsChangedAction
@@ -150,7 +128,6 @@ export type SessionAction =
   | SessionActiveClientRemovedAction
   | SessionWorkingDirectorySetAction
   | SessionWorkingDirectoryRemovedAction
-  | SessionWorkingDirectoryReplacedAction
   | SessionInputNeededSetAction
   | SessionInputNeededRemovedAction
   | SessionCustomizationsChangedAction
@@ -160,7 +137,6 @@ export type SessionAction =
   | SessionMcpServerStateChangedAction
   | SessionMcpServerStartRequestedAction
   | SessionMcpServerStopRequestedAction
-  | SessionMcpServerBackgroundRequestedAction
   | SessionIsReadChangedAction
   | SessionIsArchivedChangedAction
   | SessionActivityChangedAction
@@ -176,11 +152,9 @@ export type ClientSessionAction =
   | SessionActiveClientRemovedAction
   | SessionWorkingDirectorySetAction
   | SessionWorkingDirectoryRemovedAction
-  | SessionWorkingDirectoryReplacedAction
   | SessionCustomizationToggledAction
   | SessionMcpServerStartRequestedAction
   | SessionMcpServerStopRequestedAction
-  | SessionMcpServerBackgroundRequestedAction
   | SessionIsReadChangedAction
   | SessionIsArchivedChangedAction
   | SessionConfigChangedAction
@@ -193,7 +167,6 @@ export type ServerSessionAction =
   | SessionChatAddedAction
   | SessionChatRemovedAction
   | SessionChatUpdatedAction
-  | SessionChatsReorderedAction
   | SessionDefaultChatChangedAction
   | SessionServerToolsChangedAction
   | SessionInputNeededSetAction
@@ -224,13 +197,7 @@ export type ChatAction =
   | ChatTurnCompleteAction
   | ChatTurnCancelledAction
   | ChatErrorAction
-  | ChatTurnResumeAction
   | ChatActivityChangedAction
-  | ChatBackgroundWorkSetAction
-  | ChatBackgroundWorkRemovedAction
-  | ChatMovableChangedAction
-  | ChatChangesetsChangedAction
-  | ChatCanvasesChangedAction
   | ChatWorkingDirectorySetAction
   | ChatWorkingDirectoryRemovedAction
   | ChatUsageAction
@@ -239,8 +206,6 @@ export type ChatAction =
   | ChatPendingMessageRemovedAction
   | ChatQueuedMessagesReorderedAction
   | ChatDraftChangedAction
-  | ChatIsReadChangedAction
-  | ChatIsArchivedChangedAction
   | ChatInputRequestedAction
   | ChatInputAnswerChangedAction
   | ChatInputCompletedAction
@@ -256,15 +221,12 @@ export type ClientChatAction =
   | ChatToolCallResultConfirmedAction
   | ChatToolCallContentChangedAction
   | ChatTurnCancelledAction
-  | ChatTurnResumeAction
   | ChatWorkingDirectorySetAction
   | ChatWorkingDirectoryRemovedAction
   | ChatPendingMessageSetAction
   | ChatPendingMessageRemovedAction
   | ChatQueuedMessagesReorderedAction
   | ChatDraftChangedAction
-  | ChatIsReadChangedAction
-  | ChatIsArchivedChangedAction
   | ChatInputAnswerChangedAction
   | ChatInputCompletedAction
   | ChatTruncatedAction
@@ -282,30 +244,10 @@ export type ServerChatAction =
   | ChatTurnCompleteAction
   | ChatErrorAction
   | ChatActivityChangedAction
-  | ChatBackgroundWorkSetAction
-  | ChatBackgroundWorkRemovedAction
-  | ChatMovableChangedAction
-  | ChatChangesetsChangedAction
-  | ChatCanvasesChangedAction
   | ChatUsageAction
   | ChatReasoningAction
   | ChatInputRequestedAction
   | ChatTurnsLoadedAction
-;
-
-/** Union of all canvas-scoped actions. */
-export type CanvasAction =
-  | CanvasStateChangedAction
-;
-
-/** Union of canvas actions that clients may dispatch. */
-export type ClientCanvasAction =
-  never
-;
-
-/** Union of canvas actions that only the server may produce. */
-export type ServerCanvasAction =
-  | CanvasStateChangedAction
 ;
 
 /** Union of all terminal-scoped actions. */
@@ -408,48 +350,6 @@ export type ServerResourceWatchAction =
   | ResourceWatchChangedAction
 ;
 
-/** Union of all automation-scoped actions. */
-export type AutomationAction =
-  | AutomationCreateRequestedAction
-  | AutomationUpdateRequestedAction
-  | AutomationSetAction
-  | AutomationRemovedAction
-;
-
-/** Union of automation actions that clients may dispatch. */
-export type ClientAutomationAction =
-  | AutomationCreateRequestedAction
-  | AutomationUpdateRequestedAction
-  | AutomationRemovedAction
-;
-
-/** Union of automation actions that only the server may produce. */
-export type ServerAutomationAction =
-  | AutomationSetAction
-;
-
-/** Union of all automation-run-scoped actions. */
-export type AutomationRunAction =
-  | AutomationRunLifecycleChangedAction
-  | AutomationRunSessionSetAction
-  | AutomationRunSessionRemovedAction
-  | AutomationRunPrimarySessionChangedAction
-  | AutomationRunCancelRequestedAction
-;
-
-/** Union of automation-run actions that clients may dispatch. */
-export type ClientAutomationRunAction =
-  | AutomationRunCancelRequestedAction
-;
-
-/** Union of automation-run actions that only the server may produce. */
-export type ServerAutomationRunAction =
-  | AutomationRunLifecycleChangedAction
-  | AutomationRunSessionSetAction
-  | AutomationRunSessionRemovedAction
-  | AutomationRunPrimarySessionChangedAction
-;
-
 // ─── Client-Dispatchable Map ─────────────────────────────────────────────────
 
 /**
@@ -466,7 +366,6 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.SessionChatAdded]: false,
   [ActionType.SessionChatRemoved]: false,
   [ActionType.SessionChatUpdated]: false,
-  [ActionType.SessionChatsReordered]: false,
   [ActionType.SessionDefaultChatChanged]: false,
   [ActionType.SessionTitleChanged]: true,
   [ActionType.SessionServerToolsChanged]: false,
@@ -474,7 +373,6 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.SessionActiveClientRemoved]: true,
   [ActionType.SessionWorkingDirectorySet]: true,
   [ActionType.SessionWorkingDirectoryRemoved]: true,
-  [ActionType.SessionWorkingDirectoryReplaced]: true,
   [ActionType.SessionInputNeededSet]: false,
   [ActionType.SessionInputNeededRemoved]: false,
   [ActionType.SessionCustomizationsChanged]: false,
@@ -484,7 +382,6 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.SessionMcpServerStateChanged]: false,
   [ActionType.SessionMcpServerStartRequested]: true,
   [ActionType.SessionMcpServerStopRequested]: true,
-  [ActionType.SessionMcpServerBackgroundRequested]: true,
   [ActionType.SessionIsReadChanged]: true,
   [ActionType.SessionIsArchivedChanged]: true,
   [ActionType.SessionActivityChanged]: false,
@@ -506,14 +403,7 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.ChatTurnComplete]: false,
   [ActionType.ChatTurnCancelled]: true,
   [ActionType.ChatError]: false,
-  [ActionType.ChatTurnResume]: true,
   [ActionType.ChatActivityChanged]: false,
-  [ActionType.ChatBackgroundWorkSet]: false,
-  [ActionType.ChatBackgroundWorkRemoved]: false,
-  [ActionType.ChatMovableChanged]: false,
-  [ActionType.ChatChangesetsChanged]: false,
-  [ActionType.ChatCanvasesChanged]: false,
-  [ActionType.CanvasStateChanged]: false,
   [ActionType.ChatWorkingDirectorySet]: true,
   [ActionType.ChatWorkingDirectoryRemoved]: true,
   [ActionType.ChatUsage]: false,
@@ -522,8 +412,6 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.ChatPendingMessageRemoved]: true,
   [ActionType.ChatQueuedMessagesReordered]: true,
   [ActionType.ChatDraftChanged]: true,
-  [ActionType.ChatIsReadChanged]: true,
-  [ActionType.ChatIsArchivedChanged]: true,
   [ActionType.ChatInputRequested]: false,
   [ActionType.ChatInputAnswerChanged]: true,
   [ActionType.ChatInputCompleted]: true,
@@ -554,13 +442,4 @@ export const IS_CLIENT_DISPATCHABLE: { readonly [K in StateAction['type']]: bool
   [ActionType.TerminalCommandExecuted]: false,
   [ActionType.TerminalCommandFinished]: false,
   [ActionType.ResourceWatchChanged]: false,
-  [ActionType.AutomationCreateRequested]: true,
-  [ActionType.AutomationUpdateRequested]: true,
-  [ActionType.AutomationSet]: false,
-  [ActionType.AutomationRemoved]: true,
-  [ActionType.AutomationRunLifecycleChanged]: false,
-  [ActionType.AutomationRunSessionSet]: false,
-  [ActionType.AutomationRunSessionRemoved]: false,
-  [ActionType.AutomationRunPrimarySessionChanged]: false,
-  [ActionType.AutomationRunCancelRequested]: true,
 };

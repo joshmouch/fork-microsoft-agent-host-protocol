@@ -11,13 +11,15 @@
         "type": "plugin",
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
-        "name": "Plugin A"
+        "name": "Plugin A",
+        "enabled": true
       },
       {
         "type": "plugin",
         "id": "plugin-b",
         "uri": "https://plugins.example/b",
-        "name": "Plugin B"
+        "name": "Plugin B",
+        "enabled": true
       }
     ],
     "activeClients": [],
@@ -27,21 +29,7 @@
     {
       "type": "session/customizationToggled",
       "id": "plugin-a",
-      "enablement": [
-        {
-          "kind": "session",
-          "enabled": false
-        },
-        {
-          "kind": "workspace",
-          "uri": "file:///workspace",
-          "enabled": true
-        },
-        {
-          "kind": "global",
-          "enabled": true
-        }
-      ]
+      "enabled": false
     }
   ],
   "expected": {
@@ -55,27 +43,14 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
-        "enablement": [
-          {
-            "kind": "session",
-            "enabled": false
-          },
-          {
-            "kind": "workspace",
-            "uri": "file:///workspace",
-            "enabled": true
-          },
-          {
-            "kind": "global",
-            "enabled": true
-          }
-        ]
+        "enabled": false
       },
       {
         "type": "plugin",
         "id": "plugin-b",
         "uri": "https://plugins.example/b",
-        "name": "Plugin B"
+        "name": "Plugin B",
+        "enabled": true
       }
     ],
     "activeClients": [],

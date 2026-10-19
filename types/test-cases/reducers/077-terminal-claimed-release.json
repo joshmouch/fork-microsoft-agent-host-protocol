@@ -8,11 +8,7 @@
       "kind": "session",
       "session": "copilot:/s1",
       "turnId": "t1",
-      "toolCallId": "tc1",
-      "chat": "ahp-chat:/test-chat"
-    },
-    "lifecycle": {
-      "status": "running"
+      "toolCallId": "tc1"
     }
   },
   "actions": [
@@ -20,8 +16,7 @@
       "type": "terminal/claimed",
       "claim": {
         "kind": "session",
-        "session": "copilot:/s1",
-        "chat": "ahp-chat:/test-chat"
+        "session": "copilot:/s1"
       }
     }
   ],
@@ -30,11 +25,7 @@
     "content": [],
     "claim": {
       "kind": "session",
-      "session": "copilot:/s1",
-      "chat": "ahp-chat:/test-chat"
-    },
-    "lifecycle": {
-      "status": "running"
+      "session": "copilot:/s1"
     }
   }
 }

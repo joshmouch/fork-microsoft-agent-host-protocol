@@ -41,7 +41,6 @@ import fs from 'fs';
 import path from 'path';
 import { findProtocolSourceFiles } from './find-protocol-sources.js';
 import { readProtocolVersions } from './read-protocol-versions.js';
-import { discriminatedUnionAllowsUnknown } from './enum-compatibility.js';
 
 const GENERATED_BANNER =
   '// Generated from types/*.ts — do not edit.\n' +
@@ -156,7 +155,6 @@ function mapType(tsType: string): string {
 
   if (tsType === 'URI') return 'URI';
   if (tsType === 'StringOrMarkdown') return 'StringOrMarkdown';
-  if (tsType === 'ToolInput') return 'ToolInput';
 
   // ChildCustomizationType is a TS-only subset alias of CustomizationType.
   if (tsType === 'ChildCustomizationType') return 'CustomizationType';
@@ -173,8 +171,6 @@ function mapType(tsType: string): string {
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | AnnotationsState' ||
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState' ||
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState' ||
-    tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | AutomationState | AutomationRunState' ||
-    tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | CanvasState | AutomationState | AutomationRunState' ||
     tsType === 'RootState | SessionState | ChatState | TerminalState | ChangesetState' ||
     tsType === 'RootState | SessionState | ChatState | TerminalState | ChangesetState | AnnotationsState'
   ) {
@@ -359,12 +355,7 @@ function extractProps(iface: InterfaceDeclaration, project: Project): GoProp[] {
     // token: optional null-able stays a single pointer (avoid `**T`).
     const alreadyPointer = goType.startsWith('*');
     const optional = hasQuestionToken || hasUnionUndefined || alreadyPointer;
-    const presenceSensitiveCollection = (iface.getName() === 'AutomationDefinitionPatch'
-      && (tsName === 'triggers' || tsName === '_meta'))
-      || ((iface.getName() === 'AutomationDefinition' || iface.getName() === 'AutomationDefinitionPatch')
-        && tsName === 'disableConditions')
-      || (tsName === 'backgroundWork' && iface.getName() === 'ChatState');
-    if (optional && !alreadyPointer && (presenceSensitiveCollection || (!goType.startsWith('[]') && !goType.startsWith('map[')))) {
+    if (optional && !alreadyPointer && !goType.startsWith('[]') && !goType.startsWith('map[')) {
       goType = `*${goType}`;
     }
 
@@ -521,41 +512,6 @@ function generateStructFromInterface(
   return generateGoStruct(name, props, { doc: ifaceDoc, ...opts });
 }
 
-function generateFixedDiscriminantMethods(
-  goName: string,
-  discriminantField: string,
-  discriminantValue: string,
-  discriminantType: string,
-): string {
-  return `func (v *${goName}) UnmarshalJSON(data []byte) error {
-\tdisc, ok, err := readDiscriminator(data, ${JSON.stringify(discriminantField)})
-\tif err != nil {
-\t\treturn err
-\t}
-\tif !ok {
-\t\treturn missingDiscriminatorError(${JSON.stringify(goName)}, ${JSON.stringify(discriminantField)})
-\t}
-\tif disc != ${JSON.stringify(discriminantValue)} {
-\t\treturn unknownDiscriminatorError(${JSON.stringify(goName)}, ${JSON.stringify(discriminantField)}, disc)
-\t}
-\ttype wire ${goName}
-\tvar raw wire
-\tif err := json.Unmarshal(data, &raw); err != nil {
-\t\treturn err
-\t}
-\t*v = ${goName}(raw)
-\tv.${toPascalCase(discriminantField)} = ${discriminantType}${toPascalCase(discriminantValue)}
-\treturn nil
-}
-
-func (v ${goName}) MarshalJSON() ([]byte, error) {
-\ttype wire ${goName}
-\traw := wire(v)
-\traw.${toPascalCase(discriminantField)} = ${discriminantType}${toPascalCase(discriminantValue)}
-\treturn json.Marshal(raw)
-}`;
-}
-
 // ─── Partial Struct Generation ───────────────────────────────────────────────
 
 function generatePartialStruct(project: Project, tsInterfaceName: string): string {
@@ -595,8 +551,6 @@ interface UnionConfig {
   variants: UnionVariant[];
   /** Emit an `XUnknown` variant for forward-compat. */
   unknown?: boolean;
-  /** Discriminator enum when a generated wrapper lacks the field itself. */
-  discriminatorEnum?: string;
   /**
    * For action-like unions where the inner-struct's own discriminator
    * type would not match the wrapper's wireValue (e.g. unique inner
@@ -606,14 +560,7 @@ interface UnionConfig {
   injectDiscriminantOnMarshal?: boolean;
 }
 
-function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string {
-  const unknown = discriminatedUnionAllowsUnknown(
-    project,
-    cfg.discriminantField,
-    cfg.variants.map(variant => variant.innerType),
-    cfg.unknown,
-    cfg.discriminatorEnum,
-  );
+function generateDiscriminatedUnion(cfg: UnionConfig): string {
   const lines: string[] = [];
   emitDocComment('', cfg.doc, lines);
   lines.push(`type ${cfg.name} struct {`);
@@ -631,7 +578,7 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
     seenInner.add(v.innerType);
     lines.push(`func (*${v.innerType}) is${cfg.name}() {}`);
   }
-  if (unknown) {
+  if (cfg.unknown) {
     lines.push('');
     emitDocComment('', `${cfg.name}Unknown carries an unrecognized ${cfg.name} variant — typically a discriminator value introduced by a newer protocol version. The original JSON object is preserved verbatim so that re-encoding round-trips faithfully.`, lines);
     lines.push(`type ${cfg.name}Unknown struct {`);
@@ -645,19 +592,10 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
   // UnmarshalJSON
   lines.push(`// UnmarshalJSON decodes the variant indicated by the ${JSON.stringify(cfg.discriminantField)} discriminator.`);
   lines.push(`func (u *${cfg.name}) UnmarshalJSON(data []byte) error {`);
-  lines.push(
-    `\tdisc, ${unknown ? '_' : 'ok'}, err := readDiscriminator(data, ${JSON.stringify(cfg.discriminantField)})`,
-  );
+  lines.push(`\tdisc, _, err := readDiscriminator(data, ${JSON.stringify(cfg.discriminantField)})`);
   lines.push('\tif err != nil {');
   lines.push('\t\treturn err');
   lines.push('\t}');
-  if (!unknown) {
-    lines.push('\tif !ok {');
-    lines.push(
-      `\t\treturn missingDiscriminatorError(${JSON.stringify(cfg.name)}, ${JSON.stringify(cfg.discriminantField)})`,
-    );
-    lines.push('\t}');
-  }
   lines.push('\tswitch disc {');
   for (const v of cfg.variants) {
     lines.push(`\tcase ${JSON.stringify(v.wireValue)}:`);
@@ -668,14 +606,12 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
     lines.push('\t\tu.Value = &value');
   }
   lines.push('\tdefault:');
-  if (unknown) {
+  if (cfg.unknown) {
     lines.push('\t\traw := make(json.RawMessage, len(data))');
     lines.push('\t\tcopy(raw, data)');
     lines.push(`\t\tu.Value = &${cfg.name}Unknown{Raw: raw}`);
   } else {
-    lines.push(
-      `\t\treturn unknownDiscriminatorError(${JSON.stringify(cfg.name)}, ${JSON.stringify(cfg.discriminantField)}, disc)`,
-    );
+    lines.push(`\t\treturn &json.UnmarshalTypeError{Value: "${cfg.name}", Type: nil}`);
   }
   lines.push('\t}');
   lines.push('\treturn nil');
@@ -685,7 +621,7 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
   // MarshalJSON
   lines.push(`// MarshalJSON encodes the active variant back to JSON.`);
   lines.push(`func (u ${cfg.name}) MarshalJSON() ([]byte, error) {`);
-  if (unknown) {
+  if (cfg.unknown) {
     lines.push(`\tif unk, ok := u.Value.(*${cfg.name}Unknown); ok {`);
     lines.push('\t\tif len(unk.Raw) == 0 {');
     lines.push('\t\t\treturn []byte("null"), nil');
@@ -696,20 +632,7 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
   lines.push('\tif u.Value == nil {');
   lines.push('\t\treturn []byte("null"), nil');
   lines.push('\t}');
-  if (cfg.injectDiscriminantOnMarshal) {
-    lines.push('\tdata, err := json.Marshal(u.Value)');
-    lines.push('\tif err != nil { return nil, err }');
-    lines.push('\tvar object map[string]json.RawMessage');
-    lines.push('\tif err := json.Unmarshal(data, &object); err != nil { return nil, err }');
-    lines.push('\tswitch u.Value.(type) {');
-    for (const v of cfg.variants) {
-      lines.push(`\tcase *${v.innerType}: object[${JSON.stringify(cfg.discriminantField)}] = json.RawMessage(${JSON.stringify(JSON.stringify(v.wireValue))})`);
-    }
-    lines.push('\t}');
-    lines.push('\treturn json.Marshal(object)');
-  } else {
-    lines.push('\treturn json.Marshal(u.Value)');
-  }
+  lines.push('\treturn json.Marshal(u.Value)');
   lines.push('}');
   return lines.join('\n');
 }
@@ -725,15 +648,9 @@ const STATE_ENUMS = [
   'ToolCallRiskAssessmentStatus',
   'ToolCallCancellationReason',
   'ConfirmationOptionKind', 'ToolCallContributorKind',
-  'ToolResultContentType', 'CustomizationType', 'CustomizationEnablementKind', 'CustomizationLoadStatus',
-  'TerminalClaimKind', 'TerminalLifecycleStatus',
-  'BackgroundWorkKind',
+  'ToolResultContentType', 'CustomizationType', 'CustomizationLoadStatus', 'TerminalClaimKind',
   'McpServerStatus', 'McpAuthRequiredReason',
   'ChangesetStatus', 'ChangesetOperationStatus', 'ChangesetOperationScope', 'ResourceChangeType',
-  'SessionOriginKind',
-  'AutomationOperation', 'AutomationMisfirePolicy', 'AutomationTriggerKind',
-  'AutomationDisableConditionKind',
-  'AutomationRunStatus', 'AutomationRunOriginKind',
 ];
 
 const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: string }[] = [
@@ -757,15 +674,9 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: strin
   { name: 'SessionToolClientExecutionRequest' },
   { name: 'SessionToolAuthenticationRequest' },
   { name: 'SessionSummary' },
-  { name: 'SessionChatSummary' },
   { name: 'ChangesSummary' },
   { name: 'ChatState' },
-  { name: 'CanvasReference' },
-  { name: 'CanvasState' },
   { name: 'ChatSummary' },
-  { name: 'BackgroundShellWork' },
-  { name: 'BackgroundSubagentWork' },
-  { name: 'SideChatSelection' },
   { name: 'PendingMessage' },
   { name: 'ProjectInfo' },
   { name: 'SessionConfigPropertySchema' },
@@ -796,15 +707,13 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: strin
   { name: 'MessageEmbeddedResourceAttachment' },
   { name: 'MessageResourceAttachment' },
   { name: 'MessageAnnotationsAttachment' },
-  { name: 'MessageChatAttachment' },
   { name: 'MarkdownResponsePart' },
   { name: 'ContentRef' },
-  { name: 'ResourceResponsePart' },
+  { name: 'ResourceReponsePart', goName: 'ResourceResponsePart' },
   { name: 'ToolCallResponsePart' },
   { name: 'ReasoningResponsePart' },
   { name: 'SystemNotificationResponsePart' },
   { name: 'InputRequestResponsePart' },
-  { name: 'ErrorResponsePart' },
   { name: 'ToolCallResult' },
   { name: 'ToolCallRiskAssessmentLoadingState' },
   { name: 'ToolCallRiskAssessmentCompleteState' },
@@ -823,6 +732,7 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: strin
   { name: 'ToolResultResourceContent' },
   { name: 'ToolResultFileEditContent' },
   { name: 'ToolResultTerminalContent' },
+  { name: 'ToolResultTerminalCompleteContent' },
   { name: 'ToolResultSubagentContent' },
   { name: 'CustomizationLoadingState' },
   { name: 'CustomizationLoadedState' },
@@ -848,16 +758,10 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: strin
   { name: 'McpAuthRequirement' },
   { name: 'ToolCallClientContributor' },
   { name: 'ToolCallMcpContributor' },
-  { name: 'FileEditSide' },
-  { name: 'FileEditDiffStats' },
   { name: 'FileEdit' },
-  { name: 'FileEditCollection' },
-  { name: 'TerminalCommandResult' },
   { name: 'TerminalInfo' },
   { name: 'TerminalClientClaim' },
   { name: 'TerminalSessionClaim' },
-  { name: 'TerminalRunningLifecycleState' },
-  { name: 'TerminalExitedLifecycleState' },
   { name: 'TerminalState' },
   { name: 'TerminalUnclassifiedPart' },
   { name: 'TerminalCommandPart' },
@@ -871,34 +775,11 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: strin
   { name: 'ChangesetOperation' },
   { name: 'AnnotationsSummary' },
   { name: 'AnnotationsState' },
-  { name: 'AnnotationOrigin' },
   { name: 'Annotation' },
   { name: 'AnnotationEntry' },
   { name: 'TelemetryCapabilities' },
   { name: 'ResourceWatchState' },
   { name: 'ResourceChange' },
-  { name: 'AutomationSessionOrigin' },
-  { name: 'AutomationSchedule' },
-  { name: 'AutomationScheduleTrigger' },
-  { name: 'AutomationEventTrigger' },
-  { name: 'AutomationTriggerEventDefinition' },
-  { name: 'AutomationTriggerDefinition' },
-  { name: 'AutomationSessionTemplate' },
-  { name: 'AutomationDefinition' },
-  { name: 'AutomationDefinitionPatch' },
-  { name: 'AutomationAfterRunsCondition' },
-  { name: 'AutomationAfterDateCondition' },
-  { name: 'AutomationEntry' },
-  { name: 'AutomationState' },
-  { name: 'AutomationManualRunOrigin' },
-  { name: 'AutomationTriggeredRunOrigin' },
-  { name: 'AutomationPendingRunLifecycle' },
-  { name: 'AutomationRunningRunLifecycle' },
-  { name: 'AutomationCompletedRunLifecycle' },
-  { name: 'AutomationFailedRunLifecycle' },
-  { name: 'AutomationCancelledRunLifecycle' },
-  { name: 'AutomationRunSummary' },
-  { name: 'AutomationRunState' },
 ];
 
 const RESPONSE_PART_UNION: UnionConfig = {
@@ -912,7 +793,6 @@ const RESPONSE_PART_UNION: UnionConfig = {
     { variantName: 'Reasoning', innerType: 'ReasoningResponsePart', wireValue: 'reasoning' },
     { variantName: 'SystemNotification', innerType: 'SystemNotificationResponsePart', wireValue: 'systemNotification' },
     { variantName: 'InputRequest', innerType: 'InputRequestResponsePart', wireValue: 'inputRequest' },
-    { variantName: 'Error', innerType: 'ErrorResponsePart', wireValue: 'error' },
   ],
   unknown: true,
 };
@@ -1017,6 +897,7 @@ const TOOL_RESULT_CONTENT_UNION: UnionConfig = {
     { variantName: 'Resource', innerType: 'ToolResultResourceContent', wireValue: 'resource' },
     { variantName: 'FileEdit', innerType: 'ToolResultFileEditContent', wireValue: 'fileEdit' },
     { variantName: 'Terminal', innerType: 'ToolResultTerminalContent', wireValue: 'terminal' },
+    { variantName: 'TerminalComplete', innerType: 'ToolResultTerminalCompleteContent', wireValue: 'terminalComplete' },
     { variantName: 'Subagent', innerType: 'ToolResultSubagentContent', wireValue: 'subagent' },
   ],
   unknown: true,
@@ -1031,7 +912,6 @@ const MESSAGE_ATTACHMENT_UNION: UnionConfig = {
     { variantName: 'EmbeddedResource', innerType: 'MessageEmbeddedResourceAttachment', wireValue: 'embeddedResource' },
     { variantName: 'Resource', innerType: 'MessageResourceAttachment', wireValue: 'resource' },
     { variantName: 'Annotations', innerType: 'MessageAnnotationsAttachment', wireValue: 'annotations' },
-    { variantName: 'Chat', innerType: 'MessageChatAttachment', wireValue: 'chat' },
   ],
   unknown: true,
 };
@@ -1112,16 +992,6 @@ const TOOL_CALL_RISK_ASSESSMENT_UNION: UnionConfig = {
   unknown: true,
 };
 
-const TERMINAL_LIFECYCLE_STATE_UNION: UnionConfig = {
-  name: 'TerminalLifecycleState',
-  discriminantField: 'status',
-  doc: 'TerminalLifecycleState is the current lifecycle of a terminal process.',
-  variants: [
-    { variantName: 'Running', innerType: 'TerminalRunningLifecycleState', wireValue: 'running' },
-    { variantName: 'Exited', innerType: 'TerminalExitedLifecycleState', wireValue: 'exited' },
-  ],
-};
-
 const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
   name: 'SessionInputRequest',
   discriminantField: 'kind',
@@ -1133,74 +1003,6 @@ const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
     { variantName: 'ToolAuthentication', innerType: 'SessionToolAuthenticationRequest', wireValue: 'toolAuthentication' },
   ],
   unknown: true,
-};
-
-const BACKGROUND_WORK_UNION: UnionConfig = {
-  name: 'BackgroundWork',
-  discriminantField: 'kind',
-  doc: 'BackgroundWork is work that keeps running after the tool call that started it returns and will resume the owning chat when it finishes.',
-  variants: [
-    { variantName: 'Shell', innerType: 'BackgroundShellWork', wireValue: 'shell' },
-    { variantName: 'Subagent', innerType: 'BackgroundSubagentWork', wireValue: 'subagent' },
-  ],
-  unknown: true,
-};
-
-const SESSION_ORIGIN_UNION: UnionConfig = {
-  name: 'SessionOrigin',
-  discriminantField: 'kind',
-  doc: 'SessionOrigin is the durable origin of a session.',
-  variants: [
-    { variantName: 'Automation', innerType: 'AutomationSessionOrigin', wireValue: 'automation' },
-  ],
-  injectDiscriminantOnMarshal: true,
-};
-
-const AUTOMATION_TRIGGER_UNION: UnionConfig = {
-  name: 'AutomationTrigger',
-  discriminantField: 'kind',
-  doc: 'AutomationTrigger is an automatic trigger for an automation.',
-  variants: [
-    { variantName: 'Schedule', innerType: 'AutomationScheduleTrigger', wireValue: 'schedule' },
-    { variantName: 'Event', innerType: 'AutomationEventTrigger', wireValue: 'event' },
-  ],
-  injectDiscriminantOnMarshal: true,
-};
-
-const AUTOMATION_DISABLE_CONDITION_UNION: UnionConfig = {
-  name: 'AutomationDisableCondition',
-  discriminantField: 'kind',
-  doc: 'AutomationDisableCondition is an automation\'s self-disable rule.',
-  variants: [
-    { variantName: 'AfterRuns', innerType: 'AutomationAfterRunsCondition', wireValue: 'afterRuns' },
-    { variantName: 'AfterDate', innerType: 'AutomationAfterDateCondition', wireValue: 'afterDate' },
-  ],
-  injectDiscriminantOnMarshal: true,
-};
-
-const AUTOMATION_RUN_ORIGIN_UNION: UnionConfig = {
-  name: 'AutomationRunOrigin',
-  discriminantField: 'kind',
-  doc: 'AutomationRunOrigin describes how an automation run was created.',
-  variants: [
-    { variantName: 'Manual', innerType: 'AutomationManualRunOrigin', wireValue: 'manual' },
-    { variantName: 'Trigger', innerType: 'AutomationTriggeredRunOrigin', wireValue: 'trigger' },
-  ],
-  injectDiscriminantOnMarshal: true,
-};
-
-const AUTOMATION_RUN_LIFECYCLE_UNION: UnionConfig = {
-  name: 'AutomationRunLifecycle',
-  discriminantField: 'status',
-  doc: 'AutomationRunLifecycle is the lifecycle of an automation run.',
-  variants: [
-    { variantName: 'Pending', innerType: 'AutomationPendingRunLifecycle', wireValue: 'pending' },
-    { variantName: 'Running', innerType: 'AutomationRunningRunLifecycle', wireValue: 'running' },
-    { variantName: 'Completed', innerType: 'AutomationCompletedRunLifecycle', wireValue: 'completed' },
-    { variantName: 'Failed', innerType: 'AutomationFailedRunLifecycle', wireValue: 'failed' },
-    { variantName: 'Cancelled', innerType: 'AutomationCancelledRunLifecycle', wireValue: 'cancelled' },
-  ],
-  injectDiscriminantOnMarshal: true,
 };
 
 function generateChatOriginGo(): string {
@@ -1225,15 +1027,6 @@ type ChatForkOrigin struct {
 }
 
 func (*ChatForkOrigin) isChatOrigin() {}
-
-type ChatSideChatOrigin struct {
-\tKind   ChatOriginKind \`json:"kind"\`
-\tChat   URI            \`json:"chat"\`
-\tTurnId string         \`json:"turnId"\`
-\tSelection *SideChatSelection \`json:"selection,omitempty"\`
-}
-
-func (*ChatSideChatOrigin) isChatOrigin() {}
 
 type ChatToolOrigin struct {
 \tKind       ChatOriginKind \`json:"kind"\`
@@ -1263,12 +1056,6 @@ func (o *ChatOrigin) UnmarshalJSON(data []byte) error {
 \t\to.Value = &v
 \tcase "fork":
 \t\tvar v ChatForkOrigin
-\t\tif err := json.Unmarshal(data, &v); err != nil {
-\t\t\treturn err
-\t\t}
-\t\to.Value = &v
-\tcase "sideChat":
-\t\tvar v ChatSideChatOrigin
 \t\tif err := json.Unmarshal(data, &v); err != nil {
 \t\t\treturn err
 \t\t}
@@ -1303,38 +1090,27 @@ func (o ChatOrigin) MarshalJSON() ([]byte, error) {
 
 function generateSnapshotState(): string {
   return `// SnapshotState is the state payload of a snapshot — root, session,
-// chat, canvas, terminal, changeset, resource-watch, annotations, automation catalogue,
-// or automation-run state. The active
+// chat, terminal, changeset, resource-watch, or annotations state. The active
 // variant is chosen by which pointer field is non-nil; UnmarshalJSON probes
 // for required fields in the canonical order
-// (automationRun → automations → session → chat → canvas → terminal → changeset →
-// resourceWatch → annotations → root).
+// (session → chat → terminal → changeset → resourceWatch → annotations → root).
 type SnapshotState struct {
 \tRoot          *RootState          \`json:"-"\`
 \tSession       *SessionState       \`json:"-"\`
 \tChat          *ChatState          \`json:"-"\`
-\tCanvas        *CanvasState        \`json:"-"\`
 \tTerminal      *TerminalState      \`json:"-"\`
 \tChangeset     *ChangesetState     \`json:"-"\`
 \tResourceWatch *ResourceWatchState \`json:"-"\`
 \tAnnotations   *AnnotationsState   \`json:"-"\`
-\tAutomations   *AutomationState       \`json:"-"\`
-\tAutomationRun *AutomationRunState \`json:"-"\`
 }
 
 // MarshalJSON encodes whichever variant is currently populated.
 func (s SnapshotState) MarshalJSON() ([]byte, error) {
 \tswitch {
-\tcase s.AutomationRun != nil:
-\t\treturn json.Marshal(s.AutomationRun)
-\tcase s.Automations != nil:
-\t\treturn json.Marshal(s.Automations)
 \tcase s.Session != nil:
 \t\treturn json.Marshal(s.Session)
 \tcase s.Chat != nil:
 \t\treturn json.Marshal(s.Chat)
-\tcase s.Canvas != nil:
-\t\treturn json.Marshal(s.Canvas)
 \tcase s.Terminal != nil:
 \t\treturn json.Marshal(s.Terminal)
 \tcase s.Changeset != nil:
@@ -1359,18 +1135,6 @@ func (s *SnapshotState) UnmarshalJSON(data []byte) error {
 \t\treturn err
 \t}
 \tswitch {
-\tcase containsAll(probe, "automation", "origin", "sessions"):
-\t\tvar v AutomationRunState
-\t\tif err := json.Unmarshal(data, &v); err != nil {
-\t\t\treturn err
-\t\t}
-\t\ts.AutomationRun = &v
-\tcase containsAll(probe, "entries"):
-\t\tvar v AutomationState
-\t\tif err := json.Unmarshal(data, &v); err != nil {
-\t\t\treturn err
-\t\t}
-\t\ts.Automations = &v
 \tcase containsAll(probe, "lifecycle"):
 \t\tvar v SessionState
 \t\tif err := json.Unmarshal(data, &v); err != nil {
@@ -1383,12 +1147,6 @@ func (s *SnapshotState) UnmarshalJSON(data []byte) error {
 \t\t\treturn err
 \t\t}
 \t\ts.Chat = &v
-\tcase containsAll(probe, "instanceId", "extensionId", "canvasId"):
-\t\tvar v CanvasState
-\t\tif err := json.Unmarshal(data, &v); err != nil {
-\t\t\treturn err
-\t\t}
-\t\ts.Canvas = &v
 \tcase containsAll(probe, "content"):
 \t\tvar v TerminalState
 \t\tif err := json.Unmarshal(data, &v); err != nil {
@@ -1433,39 +1191,6 @@ func containsAll(m map[string]json.RawMessage, keys ...string) bool {
 }`;
 }
 
-function generateToolInput(): string {
-  return `// ToolInput is raw tool input represented inline or by content reference.
-type ToolInput struct {
-\tInline     *string
-\tContentRef *ContentRef
-}
-
-func (t ToolInput) MarshalJSON() ([]byte, error) {
-\tif t.Inline != nil {
-\t\treturn json.Marshal(*t.Inline)
-\t}
-\tif t.ContentRef != nil {
-\t\treturn json.Marshal(t.ContentRef)
-\t}
-\treturn []byte("null"), nil
-}
-
-func (t *ToolInput) UnmarshalJSON(data []byte) error {
-\t*t = ToolInput{}
-\tvar inline string
-\tif err := json.Unmarshal(data, &inline); err == nil {
-\t\tt.Inline = &inline
-\t\treturn nil
-\t}
-\tvar ref ContentRef
-\tif err := json.Unmarshal(data, &ref); err != nil {
-\t\treturn err
-\t}
-\tt.ContentRef = &ref
-\treturn nil
-}`;
-}
-
 function generateStateFile(project: Project): string {
   const lines: string[] = [HEADER_WITH_IMPORTS];
 
@@ -1493,61 +1218,40 @@ function generateStateFile(project: Project): string {
     }
   }
 
-  lines.push('// ─── Customization Enablement Union ───────────────────────────────────────');
-  lines.push('');
-  lines.push(generateCustomizationEnablementGo());
-  lines.push('');
-
-  lines.push(generateToolInput());
-  lines.push('');
-
   lines.push('// ─── Discriminated Unions ─────────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, RESPONSE_PART_UNION));
+  lines.push(generateDiscriminatedUnion(RESPONSE_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONFIRMATION_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONFIRMATION_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CLAIM_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CLAIM_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CONTENT_PART_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CONTENT_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_QUESTION_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_QUESTION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_ANSWER_VALUE_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_ANSWER_VALUE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_ANSWER_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_ANSWER_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_RESULT_CONTENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_RESULT_CONTENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MESSAGE_ATTACHMENT_UNION));
+  lines.push(generateDiscriminatedUnion(MESSAGE_ATTACHMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHILD_CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CHILD_CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_LOAD_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_LOAD_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MCP_SERVER_STATUS_UNION));
+  lines.push(generateDiscriminatedUnion(MCP_SERVER_STATUS_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONTRIBUTOR_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONTRIBUTOR_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_RISK_ASSESSMENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_RISK_ASSESSMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_LIFECYCLE_STATE_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_REQUEST_UNION));
-  lines.push(generateDiscriminatedUnion(project, BACKGROUND_WORK_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_TRIGGER_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_DISABLE_CONDITION_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_LIFECYCLE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_REQUEST_UNION));
   lines.push('');
   lines.push(generateChatOriginGo());
   lines.push('');
@@ -1572,7 +1276,6 @@ const ACTION_VARIANTS: {
   { type: 'session/chatAdded', variantName: 'SessionChatAdded', tsInterface: 'SessionChatAddedAction' },
   { type: 'session/chatRemoved', variantName: 'SessionChatRemoved', tsInterface: 'SessionChatRemovedAction' },
   { type: 'session/chatUpdated', variantName: 'SessionChatUpdated', tsInterface: 'SessionChatUpdatedAction' },
-  { type: 'session/chatsReordered', variantName: 'SessionChatsReordered', tsInterface: 'SessionChatsReorderedAction' },
   { type: 'session/defaultChatChanged', variantName: 'SessionDefaultChatChanged', tsInterface: 'SessionDefaultChatChangedAction' },
   { type: 'chat/turnStarted', variantName: 'ChatTurnStarted', tsInterface: 'ChatTurnStartedAction' },
   { type: 'chat/delta', variantName: 'ChatDelta', tsInterface: 'ChatDeltaAction' },
@@ -1589,14 +1292,7 @@ const ACTION_VARIANTS: {
   { type: 'chat/turnComplete', variantName: 'ChatTurnComplete', tsInterface: 'ChatTurnCompleteAction' },
   { type: 'chat/turnCancelled', variantName: 'ChatTurnCancelled', tsInterface: 'ChatTurnCancelledAction' },
   { type: 'chat/error', variantName: 'ChatError', tsInterface: 'ChatErrorAction' },
-  { type: 'chat/turnResume', variantName: 'ChatTurnResume', tsInterface: 'ChatTurnResumeAction' },
   { type: 'chat/activityChanged', variantName: 'ChatActivityChanged', tsInterface: 'ChatActivityChangedAction' },
-  { type: 'chat/backgroundWorkSet', variantName: 'ChatBackgroundWorkSet', tsInterface: 'ChatBackgroundWorkSetAction' },
-  { type: 'chat/backgroundWorkRemoved', variantName: 'ChatBackgroundWorkRemoved', tsInterface: 'ChatBackgroundWorkRemovedAction' },
-  { type: 'chat/movableChanged', variantName: 'ChatMovableChanged', tsInterface: 'ChatMovableChangedAction' },
-  { type: 'chat/changesetsChanged', variantName: 'ChatChangesetsChanged', tsInterface: 'ChatChangesetsChangedAction' },
-  { type: 'chat/canvasesChanged', variantName: 'ChatCanvasesChanged', tsInterface: 'ChatCanvasesChangedAction' },
-  { type: 'canvas/stateChanged', variantName: 'CanvasStateChanged', tsInterface: 'CanvasStateChangedAction' },
   { type: 'session/titleChanged', variantName: 'SessionTitleChanged', tsInterface: 'SessionTitleChangedAction' },
   { type: 'chat/usage', variantName: 'ChatUsage', tsInterface: 'ChatUsageAction' },
   { type: 'chat/reasoning', variantName: 'ChatReasoning', tsInterface: 'ChatReasoningAction' },
@@ -1604,8 +1300,6 @@ const ACTION_VARIANTS: {
   { type: 'chat/pendingMessageRemoved', variantName: 'ChatPendingMessageRemoved', tsInterface: 'ChatPendingMessageRemovedAction' },
   { type: 'chat/queuedMessagesReordered', variantName: 'ChatQueuedMessagesReordered', tsInterface: 'ChatQueuedMessagesReorderedAction' },
   { type: 'chat/draftChanged', variantName: 'ChatDraftChanged', tsInterface: 'ChatDraftChangedAction' },
-  { type: 'chat/isReadChanged', variantName: 'ChatIsReadChanged', tsInterface: 'ChatIsReadChangedAction' },
-  { type: 'chat/isArchivedChanged', variantName: 'ChatIsArchivedChanged', tsInterface: 'ChatIsArchivedChangedAction' },
   { type: 'chat/inputRequested', variantName: 'ChatInputRequested', tsInterface: 'ChatInputRequestedAction' },
   { type: 'chat/inputAnswerChanged', variantName: 'ChatInputAnswerChanged', tsInterface: 'ChatInputAnswerChangedAction' },
   { type: 'chat/inputCompleted', variantName: 'ChatInputCompleted', tsInterface: 'ChatInputCompletedAction' },
@@ -1620,7 +1314,6 @@ const ACTION_VARIANTS: {
   { type: 'session/activeClientRemoved', variantName: 'SessionActiveClientRemoved', tsInterface: 'SessionActiveClientRemovedAction' },
   { type: 'session/workingDirectorySet', variantName: 'SessionWorkingDirectorySet', tsInterface: 'SessionWorkingDirectorySetAction' },
   { type: 'session/workingDirectoryRemoved', variantName: 'SessionWorkingDirectoryRemoved', tsInterface: 'SessionWorkingDirectoryRemovedAction' },
-  { type: 'session/workingDirectoryReplaced', variantName: 'SessionWorkingDirectoryReplaced', tsInterface: 'SessionWorkingDirectoryReplacedAction' },
   { type: 'chat/workingDirectorySet', variantName: 'ChatWorkingDirectorySet', tsInterface: 'ChatWorkingDirectorySetAction' },
   { type: 'chat/workingDirectoryRemoved', variantName: 'ChatWorkingDirectoryRemoved', tsInterface: 'ChatWorkingDirectoryRemovedAction' },
   { type: 'session/inputNeededSet', variantName: 'SessionInputNeededSet', tsInterface: 'SessionInputNeededSetAction' },
@@ -1632,7 +1325,6 @@ const ACTION_VARIANTS: {
   { type: 'session/mcpServerStateChanged', variantName: 'SessionMcpServerStateChanged', tsInterface: 'SessionMcpServerStateChangedAction' },
   { type: 'session/mcpServerStartRequested', variantName: 'SessionMcpServerStartRequested', tsInterface: 'SessionMcpServerStartRequestedAction' },
   { type: 'session/mcpServerStopRequested', variantName: 'SessionMcpServerStopRequested', tsInterface: 'SessionMcpServerStopRequestedAction' },
-  { type: 'session/mcpServerBackgroundRequested', variantName: 'SessionMcpServerBackgroundRequested', tsInterface: 'SessionMcpServerBackgroundRequestedAction' },
   { type: 'session/configChanged', variantName: 'SessionConfigChanged', tsInterface: 'SessionConfigChangedAction' },
   { type: 'session/metaChanged', variantName: 'SessionMetaChanged', tsInterface: 'SessionMetaChangedAction' },
   { type: 'changeset/statusChanged', variantName: 'ChangesetStatusChanged', tsInterface: 'ChangesetStatusChangedAction' },
@@ -1661,15 +1353,6 @@ const ACTION_VARIANTS: {
   { type: 'terminal/commandExecuted', variantName: 'TerminalCommandExecuted', tsInterface: 'TerminalCommandExecutedAction' },
   { type: 'terminal/commandFinished', variantName: 'TerminalCommandFinished', tsInterface: 'TerminalCommandFinishedAction' },
   { type: 'resourceWatch/changed', variantName: 'ResourceWatchChanged', tsInterface: 'ResourceWatchChangedAction' },
-  { type: 'automation/createRequested', variantName: 'AutomationCreateRequested', tsInterface: 'AutomationCreateRequestedAction' },
-  { type: 'automation/updateRequested', variantName: 'AutomationUpdateRequested', tsInterface: 'AutomationUpdateRequestedAction' },
-  { type: 'automation/set', variantName: 'AutomationSet', tsInterface: 'AutomationSetAction' },
-  { type: 'automation/removed', variantName: 'AutomationRemoved', tsInterface: 'AutomationRemovedAction' },
-  { type: 'automationRun/lifecycleChanged', variantName: 'AutomationRunLifecycleChanged', tsInterface: 'AutomationRunLifecycleChangedAction' },
-  { type: 'automationRun/sessionSet', variantName: 'AutomationRunSessionSet', tsInterface: 'AutomationRunSessionSetAction' },
-  { type: 'automationRun/sessionRemoved', variantName: 'AutomationRunSessionRemoved', tsInterface: 'AutomationRunSessionRemovedAction' },
-  { type: 'automationRun/primarySessionChanged', variantName: 'AutomationRunPrimarySessionChanged', tsInterface: 'AutomationRunPrimarySessionChangedAction' },
-  { type: 'automationRun/cancelRequested', variantName: 'AutomationRunCancelRequested', tsInterface: 'AutomationRunCancelRequestedAction' },
 ];
 
 function generateMergedChatToolCallConfirmedStruct(): string {
@@ -1711,7 +1394,7 @@ function generateActionTypeEnum(project: Project): string {
   return generateEnum(decl);
 }
 
-function generateActionsUnion(project: Project): string {
+function generateActionsUnion(): string {
   const cfg: UnionConfig = {
     name: 'StateAction',
     discriminantField: 'type',
@@ -1724,9 +1407,9 @@ function generateActionsUnion(project: Project): string {
           : stripIPrefix(v.tsInterface),
       wireValue: v.type,
     })),
-    discriminatorEnum: 'ActionType',
+    unknown: true,
   };
-  return generateDiscriminatedUnion(project, cfg);
+  return generateDiscriminatedUnion(cfg);
 }
 
 function generateActionsFile(project: Project): string {
@@ -1763,7 +1446,7 @@ function generateActionsFile(project: Project): string {
   }
 
   lines.push('// ─── StateAction Union ───────────────────────────────────────────────\n');
-  lines.push(generateActionsUnion(project));
+  lines.push(generateActionsUnion());
   lines.push('');
 
   return lines.join('\n');
@@ -1771,24 +1454,18 @@ function generateActionsFile(project: Project): string {
 
 // ─── Commands File Generator ─────────────────────────────────────────────────
 
-const COMMAND_ENUMS = ['ReconnectResultType', 'ChatSourceKind', 'ChatMoveDestinationKind', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
+const COMMAND_ENUMS = ['ReconnectResultType', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
 
 const COMMAND_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: string }[] = [
   { name: 'InitializeParams' }, { name: 'InitializeResult' },
-  { name: 'ClientCapabilities' }, { name: 'AutomationCapabilities' },
-  { name: 'AutomationCreateCapability' },
-  { name: 'AutomationScheduleCapabilities' },
-  { name: 'AutomationRunCancellationCapability' },
-  { name: 'AutomationCustomizationsCapability' },
-  { name: 'Implementation' },
+  { name: 'ClientCapabilities' }, { name: 'Implementation' },
   { name: 'ReconnectParams' },
   { name: 'ReconnectReplayResult', omitDiscriminants: true },
   { name: 'ReconnectSnapshotResult', omitDiscriminants: true },
   { name: 'SubscribeParams' }, { name: 'SubscribeView' }, { name: 'SubscriptionDeliveryOptions' }, { name: 'SubscribeResult' },
-  { name: 'CreateSessionParams' },
+  { name: 'SessionForkSource' }, { name: 'CreateSessionParams' },
   { name: 'DisposeSessionParams' },
-  { name: 'ForkChatSource' }, { name: 'SideChatSource' }, { name: 'CreateChatParams' }, { name: 'DisposeChatParams' },
-  { name: 'ChatMoveToSessionDestination' }, { name: 'ChatMoveToNewSessionDestination' }, { name: 'MoveChatParams' }, { name: 'MoveChatResult' },
+  { name: 'ChatForkSource' }, { name: 'CreateChatParams' }, { name: 'DisposeChatParams' },
   { name: 'ListSessionsParams' }, { name: 'ListSessionsResult' },
   { name: 'ResourceReadParams' }, { name: 'ResourceReadResult' },
   { name: 'ResourceWriteParams' }, { name: 'ResourceWriteResult' },
@@ -1811,9 +1488,6 @@ const COMMAND_STRUCTS: { name: string; omitDiscriminants?: boolean; goName?: str
   { name: 'CompletionsParams' }, { name: 'CompletionItem' }, { name: 'CompletionsResult' },
   { name: 'InvokeChangesetOperationParams' }, { name: 'InvokeChangesetOperationResult' },
   { name: 'ChangesetOperationFollowUp' },
-  { name: 'ListAutomationTriggerDefinitionsParams' }, { name: 'ListAutomationTriggerDefinitionsResult' },
-  { name: 'RunAutomationParams' }, { name: 'RunAutomationResult' },
-  { name: 'FetchAutomationRunsParams' }, { name: 'FetchAutomationRunsResult' },
 ];
 
 const RECONNECT_RESULT_UNION: UnionConfig = {
@@ -1825,94 +1499,6 @@ const RECONNECT_RESULT_UNION: UnionConfig = {
     { variantName: 'Snapshot', innerType: 'ReconnectSnapshotResult', wireValue: 'snapshot' },
   ],
 };
-
-const CHAT_SOURCE_UNION: UnionConfig = {
-  name: 'ChatSource',
-  discriminantField: 'kind',
-  doc: 'ChatSource identifies how a new chat uses a source chat.',
-  variants: [
-    { variantName: 'Fork', innerType: 'ForkChatSource', wireValue: 'fork' },
-    { variantName: 'SideChat', innerType: 'SideChatSource', wireValue: 'sideChat' },
-  ],
-};
-
-const CHAT_MOVE_DESTINATION_UNION: UnionConfig = {
-  name: 'ChatMoveDestination',
-  discriminantField: 'kind',
-  doc: 'Destination of an atomic chat move.',
-  variants: [
-    { variantName: 'Session', innerType: 'ChatMoveToSessionDestination', wireValue: 'session' },
-    { variantName: 'NewSession', innerType: 'ChatMoveToNewSessionDestination', wireValue: 'newSession' },
-  ],
-};
-
-function generateCustomizationEnablementGo(): string {
-  return `// CustomizationEnablement is a single explicit customization enablement decision.
-type CustomizationEnablement struct {
-\tValue isCustomizationEnablement
-}
-
-type isCustomizationEnablement interface{ isCustomizationEnablement() }
-
-type CustomizationEnablementGlobal struct {
-\tKind    string \`json:"kind"\`
-\tEnabled bool   \`json:"enabled"\`
-}
-
-func (*CustomizationEnablementGlobal) isCustomizationEnablement() {}
-
-type CustomizationEnablementWorkspace struct {
-\tKind    string \`json:"kind"\`
-\tURI     URI    \`json:"uri"\`
-\tEnabled bool   \`json:"enabled"\`
-}
-
-func (*CustomizationEnablementWorkspace) isCustomizationEnablement() {}
-
-type CustomizationEnablementSession struct {
-\tKind    string \`json:"kind"\`
-\tEnabled bool   \`json:"enabled"\`
-}
-
-func (*CustomizationEnablementSession) isCustomizationEnablement() {}
-
-func (e *CustomizationEnablement) UnmarshalJSON(data []byte) error {
-\tdisc, _, err := readDiscriminator(data, "kind")
-\tif err != nil {
-\t\treturn err
-\t}
-\tswitch disc {
-\tcase "global":
-\t\tvar value CustomizationEnablementGlobal
-\t\tif err := json.Unmarshal(data, &value); err != nil {
-\t\t\treturn err
-\t\t}
-\t\te.Value = &value
-\tcase "workspace":
-\t\tvar value CustomizationEnablementWorkspace
-\t\tif err := json.Unmarshal(data, &value); err != nil {
-\t\t\treturn err
-\t\t}
-\t\te.Value = &value
-\tcase "session":
-\t\tvar value CustomizationEnablementSession
-\t\tif err := json.Unmarshal(data, &value); err != nil {
-\t\t\treturn err
-\t\t}
-\t\te.Value = &value
-\tdefault:
-\t\treturn &json.UnmarshalTypeError{Value: "CustomizationEnablement"}
-\t}
-\treturn nil
-}
-
-func (e CustomizationEnablement) MarshalJSON() ([]byte, error) {
-\tif e.Value == nil {
-\t\treturn []byte("null"), nil
-\t}
-\treturn json.Marshal(e.Value)
-}`;
-}
 
 function generateChangesetOperationTargetGo(): string {
   return `// ChangesetOperationTarget identifies the file or range a
@@ -2007,22 +1593,8 @@ function generateCommandsFile(project: Project): string {
     }
   }
 
-  lines.push(generateFixedDiscriminantMethods('ForkChatSource', 'kind', 'fork', 'ChatSourceKind'));
-  lines.push('');
-  lines.push(generateFixedDiscriminantMethods('SideChatSource', 'kind', 'sideChat', 'ChatSourceKind'));
-  lines.push('');
-  lines.push(generateFixedDiscriminantMethods('ChatMoveToSessionDestination', 'kind', 'session', 'ChatMoveDestinationKind'));
-  lines.push('');
-  lines.push(generateFixedDiscriminantMethods('ChatMoveToNewSessionDestination', 'kind', 'newSession', 'ChatMoveDestinationKind'));
-  lines.push('');
-  lines.push('// ─── ChatSource Union ─────────────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, CHAT_SOURCE_UNION));
-  lines.push('');
-  lines.push('// ─── ChatMoveDestination Union ────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, CHAT_MOVE_DESTINATION_UNION));
-  lines.push('');
   lines.push('// ─── ReconnectResult Union ────────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, RECONNECT_RESULT_UNION));
+  lines.push(generateDiscriminatedUnion(RECONNECT_RESULT_UNION));
   lines.push('');
 
   lines.push('// ─── Changeset Operation Unions ───────────────────────────────────────\n');
@@ -2124,7 +1696,7 @@ const (
 \tErrorCodeSessionAlreadyExists        int32 = -32003
 \tErrorCodeTurnInProgress              int32 = -32004
 \tErrorCodeUnsupportedProtocolVersion  int32 = -32005
-\t// -32006 is intentionally reserved and unassigned.
+\tErrorCodeContentNotFound             int32 = -32006
 \tErrorCodeAuthRequired                int32 = -32007
 \tErrorCodeNotFound                    int32 = -32008
 \tErrorCodePermissionDenied            int32 = -32009
@@ -2304,12 +1876,6 @@ function generateVersionFile(project: Project): string {
   const { current, supported } = readProtocolVersions(project);
   const supportedLiteral = supported.map((v) => `\t${JSON.stringify(v)},`).join('\n');
   return `${GENERATED_BANNER}
-import (
-    "fmt"
-    "strconv"
-    "strings"
-)
-
 // ProtocolVersion is the current protocol version (SemVer
 // MAJOR.MINOR.PATCH) that this generated source speaks.
 const ProtocolVersion = ${JSON.stringify(current)}
@@ -2322,63 +1888,13 @@ ${supportedLiteral}
 }
 
 // SupportedProtocolVersions returns every protocol version this client
-// is willing to negotiate, ordered most-preferred-first, independently
-// of the development [ProtocolVersion]. The returned slice is a fresh
+// is willing to negotiate, ordered most-preferred-first. The first
+// entry always equals [ProtocolVersion]. The returned slice is a fresh
 // copy on every call so callers may mutate it freely.
 func SupportedProtocolVersions() []string {
 \tout := make([]string, len(supportedProtocolVersions))
 \tcopy(out, supportedProtocolVersions)
 \treturn out
-}
-
-// NegotiateProtocolVersion selects the highest offered version in a supported
-// caret range. An empty result means the host must send UnsupportedProtocolVersion
-// and close. Malformed versions return an error.
-func NegotiateProtocolVersion(offered []string) (string, error) {
-    parse := func(version string) ([3]uint64, error) {
-        var result [3]uint64
-        parts := strings.Split(version, ".")
-        if len(parts) != 3 { return result, fmt.Errorf("invalid protocol version: %s", version) }
-        for i, part := range parts {
-            if part == "" || (len(part) > 1 && part[0] == '0') {
-                return result, fmt.Errorf("invalid protocol version: %s", version)
-            }
-            for _, digit := range part {
-                if digit < '0' || digit > '9' { return result, fmt.Errorf("invalid protocol version: %s", version) }
-            }
-            value, err := strconv.ParseUint(part, 10, 64)
-            if err != nil { return result, fmt.Errorf("invalid protocol version: %s", version) }
-            result[i] = value
-        }
-        return result, nil
-    }
-    compare := func(a, b [3]uint64) int {
-        for i := range a {
-            if a[i] < b[i] { return -1 }
-            if a[i] > b[i] { return 1 }
-        }
-        return 0
-    }
-    var baselines [][3]uint64
-    for _, baseline := range supportedProtocolVersions {
-        parts, err := parse(baseline)
-        if err != nil { return "", err }
-        baselines = append(baselines, parts)
-    }
-    var selected string
-    var previous [3]uint64
-    for _, version := range offered {
-        parts, err := parse(version)
-        if err != nil { return "", err }
-        for _, base := range baselines {
-            if parts[0] == base[0] && (parts[0] > 0 || parts[1] == base[1]) &&
-                (parts[0] > 0 || parts[1] > 0 || parts[2] == base[2]) &&
-                compare(parts, base) >= 0 && (selected == "" || compare(parts, previous) > 0) {
-                selected, previous = version, parts
-            }
-        }
-    }
-    return selected, nil
 }
 `;
 }
@@ -2416,7 +1932,6 @@ function checkExhaustiveness(project: Project): void {
     'PaginatedParams',
     'PaginatedResult',
     'StringOrMarkdown',
-    'ToolInput',
     'ToolCallState',
     'StateAction',
     'ActionEnvelope',
@@ -2434,8 +1949,6 @@ function checkExhaustiveness(project: Project): void {
     'TerminalClaim',
     'TerminalContentPart',
     'ChatOrigin',
-    'ChatSource',
-    'ChatMoveDestination',
     'ChatInputQuestion',
     'ChatInputAnswerValue',
     'ChatInputAnswer',
@@ -2449,16 +1962,9 @@ function checkExhaustiveness(project: Project): void {
     'McpServerState',
     'ToolCallContributor',
     'ToolCallRiskAssessment',
-    'TerminalLifecycleState',
     'SessionInputRequest',
-    'BackgroundWork',
     'ToolCallConfirmationState',
     'ReconnectResult',
-    'SessionOrigin',
-    'AutomationTrigger',
-    'AutomationDisableCondition',
-    'AutomationRunOrigin',
-    'AutomationRunLifecycle',
     'AuthRequiredErrorData',
     'PermissionDeniedErrorData',
     'UnsupportedProtocolVersionErrorData',
@@ -2468,7 +1974,6 @@ function checkExhaustiveness(project: Project): void {
     'AhpErrorCodeWithData',
     'JsonRpcErrorCode',
     'ChangesetOperationTarget',
-    'CustomizationEnablement',
   ]);
 
   const missing = [...imported].filter((n) => !coveredByLists.has(n) && !knownSpecial.has(n));

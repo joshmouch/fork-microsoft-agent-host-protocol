@@ -12,6 +12,7 @@
         "id": "mcp-top",
         "uri": "https://mcp.example/server",
         "name": "Top-level Server",
+        "enabled": true,
         "state": {
           "kind": "ready"
         }
@@ -21,6 +22,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",
@@ -45,12 +47,7 @@
     {
       "type": "session/customizationToggled",
       "id": "skill-1",
-      "enablement": [
-        {
-          "kind": "session",
-          "enabled": false
-        }
-      ]
+      "enabled": false
     }
   ],
   "expected": {
@@ -64,6 +61,7 @@
         "id": "mcp-top",
         "uri": "https://mcp.example/server",
         "name": "Top-level Server",
+        "enabled": true,
         "state": {
           "kind": "ready"
         }
@@ -73,6 +71,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",

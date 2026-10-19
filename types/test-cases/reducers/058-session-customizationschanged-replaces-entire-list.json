@@ -17,13 +17,15 @@
           "type": "plugin",
           "id": "plugin-a",
           "uri": "https://plugins.example/a",
-          "name": "Plugin A"
+          "name": "Plugin A",
+          "enabled": true
         },
         {
           "type": "plugin",
           "id": "plugin-b",
           "uri": "https://plugins.example/b",
           "name": "Plugin B",
+          "enabled": false,
           "clientId": "client-1"
         }
       ]
@@ -39,13 +41,15 @@
         "type": "plugin",
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
-        "name": "Plugin A"
+        "name": "Plugin A",
+        "enabled": true
       },
       {
         "type": "plugin",
         "id": "plugin-b",
         "uri": "https://plugins.example/b",
         "name": "Plugin B",
+        "enabled": false,
         "clientId": "client-1"
       }
     ],

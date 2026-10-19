@@ -24,9 +24,7 @@
             "customizationId": "mcp-1"
           },
           "invocationMessage": "Search: foo",
-          "toolInput": {
-            "uri": "file:///tool-inputs/tool-input.json"
-          },
+          "toolInput": "foo",
           "confirmed": "not-needed",
           "auth": {
             "reason": "required",

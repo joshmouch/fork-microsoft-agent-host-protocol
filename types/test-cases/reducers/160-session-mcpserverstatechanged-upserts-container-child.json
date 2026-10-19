@@ -14,6 +14,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",
@@ -26,6 +27,7 @@
             "id": "mcp-child",
             "uri": "https://plugins.example/a#mcp/search",
             "name": "Search",
+            "enabled": true,
             "state": {
               "kind": "starting"
             }
@@ -57,6 +59,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",
@@ -69,6 +72,7 @@
             "id": "mcp-child",
             "uri": "https://plugins.example/a#mcp/search",
             "name": "Search",
+            "enabled": true,
             "state": {
               "kind": "ready"
             },

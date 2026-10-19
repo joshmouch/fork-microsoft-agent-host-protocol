@@ -5,12 +5,9 @@
  */
 
 import { ActionType } from '../common/actions.js';
-import type { StringOrMarkdown, FileEditCollection, UsageInfo, URI } from '../common/state.js';
-import type { CanvasReference } from '../channels-canvas/state.js';
-import type { Changeset } from '../channels-changeset/state.js';
+import type { StringOrMarkdown, ErrorInfo, FileEdit, UsageInfo, URI } from '../common/state.js';
 import type { McpAuthRequirement } from '../channels-session/state.js';
 import type {
-  BackgroundWork,
   Message,
   ResponsePart,
   ToolCallResult,
@@ -19,10 +16,8 @@ import type {
   ChatInputRequest,
   ChatInputResponseKind,
   ConfirmationOption,
-  ErrorResponsePart,
   ToolCallContributor,
   ToolCallRiskAssessment,
-  ToolInput,
   Turn,
 } from './state.js';
 import {
@@ -94,7 +89,7 @@ export interface ChatTurnStartedAction {
  * Streaming text chunk from the assistant, appended to a specific response part.
  *
  * The server MUST first emit a `chat/responsePart` to create the target
- * markdown part, then use this action to append text to it.
+ * part (markdown or reasoning), then use this action to append text to it.
  *
  * @category Chat Actions
  * @version 1
@@ -122,9 +117,6 @@ export interface ChatDeltaAction {
 /**
  * Structured content appended to the response.
  *
- * An {@link ErrorResponsePart} MUST be appended with {@link ChatErrorAction}
- * instead so adding the part and ending the turn are one atomic transition.
- *
  * @category Chat Actions
  * @version 1
  */
@@ -132,7 +124,7 @@ export interface ChatResponsePartAction {
   type: ActionType.ChatResponsePart;
   /** Turn identifier */
   turnId: string;
-  /** Response part to append; error parts are ignored. */
+  /** Response part (markdown or content ref) */
   part: ResponsePart;
   /**
    * Additional provider-specific metadata for this action.
@@ -181,8 +173,8 @@ export interface ChatToolCallStartAction extends ToolCallActionBase {
  */
 export interface ChatToolCallDeltaAction extends ToolCallActionBase {
   type: ActionType.ChatToolCallDelta;
-  /** Partial parameter content to append, if provided by the host. */
-  content?: string;
+  /** Partial parameter content to append */
+  content: string;
   /** Updated progress message */
   invocationMessage?: StringOrMarkdown;
 }
@@ -207,26 +199,16 @@ export interface ChatToolCallDeltaAction extends ToolCallActionBase {
  */
 export interface ChatToolCallReadyAction extends ToolCallActionBase {
   type: ActionType.ChatToolCallReady;
-  /**
-   * Final contributor metadata. MUST NOT change execution ownership established
-   * at `chat/toolCallStart`; a client contributor must keep the same `clientId`.
-   */
-  contributor?: ToolCallContributor;
-  /**
-   * Final human-readable description of what the tool invocation intends to do.
-   * When present, replaces the provisional intention from `chat/toolCallStart`.
-   */
-  intention?: string;
   /** Message describing what the tool will do or what confirmation is needed */
   invocationMessage: StringOrMarkdown;
-  /** Final tool input */
-  toolInput?: ToolInput;
+  /** Raw tool input */
+  toolInput?: string;
   /** Short title for the confirmation prompt (e.g. `"Run in terminal"`, `"Write file"`) */
   confirmationTitle?: StringOrMarkdown;
   /** Risk assessment that informed the confirmation requirement. */
   riskAssessment?: ToolCallRiskAssessment;
   /** File edits that this tool call will perform, for preview before confirmation */
-  edits?: FileEditCollection;
+  edits?: { items: FileEdit[] };
   /** Whether the agent host allows the client to edit the tool's input parameters before confirming */
   editable?: boolean;
   /** If set, the tool was auto-confirmed and transitions directly to `running` */
@@ -253,13 +235,7 @@ export interface ChatToolCallApprovedAction extends ToolCallActionBase {
   approved: true;
   /** How the tool was confirmed */
   confirmed: ToolCallConfirmationReason;
-  /**
-   * Edited tool input parameters, if the client modified them before confirming.
-   *
-   * For inline `toolInput`, the reducer replaces the state value directly.
-   * For referenced input, the host MUST replace the resource contents before
-   * echoing the accepted action.
-   */
+  /** Edited tool input parameters, if the client modified them before confirming */
   editedToolInput?: string;
   /** ID of the selected confirmation option, if the server provided options */
   selectedOptionId?: string;
@@ -495,11 +471,8 @@ export interface ChatErrorAction {
    * data.
    */
   duration: number;
-  /**
-   * Error part to append to the response stream before finalizing the turn.
-   * Its optional `resumable` flag indicates whether the turn can be resumed.
-   */
-  part: ErrorResponsePart;
+  /** Error details */
+  error: ErrorInfo;
   /**
    * Additional provider-specific metadata for this action.
    *
@@ -510,24 +483,6 @@ export interface ChatErrorAction {
    * convention.
    */
   _meta?: Record<string, unknown>;
-}
-
-/**
- * Resumes the latest errored turn without adding another message.
- *
- * The turn MUST be the latest turn, its state MUST be `error`, and its final
- * response part MUST be a resumable error. The reducer reopens the same turn
- * with its existing message, response parts, and usage intact. The host then
- * resumes the provider's execution for that turn.
- *
- * @category Chat Actions
- * @version 1
- * @clientDispatchable
- */
-export interface ChatTurnResumeAction {
-  type: ActionType.ChatTurnResume;
-  /** Identifier of the errored turn. */
-  turnId: string;
 }
 
 /**
@@ -546,84 +501,6 @@ export interface ChatActivityChangedAction {
   type: ActionType.ChatActivityChanged;
   /** Human-readable description of current activity; omit or set `undefined` to clear */
   activity?: string;
-}
-
-/**
- * Adds or replaces a {@link BackgroundWork} entry by `id`, independently of turn
- * state.
- *
- * @category Chat Actions
- * @version 1
- */
-export interface ChatBackgroundWorkSetAction {
-  type: ActionType.ChatBackgroundWorkSet;
-  /** The complete entry. */
-  work: BackgroundWork;
-}
-
-/**
- * Removes finished or no-longer-tracked background work; unknown IDs are a no-op.
- *
- * @category Chat Actions
- * @version 1
- */
-export interface ChatBackgroundWorkRemovedAction {
-  type: ActionType.ChatBackgroundWorkRemoved;
-  /** The {@link BackgroundWorkBase.id | id} of the entry to remove. */
-  id: string;
-}
-
-/**
- * Whether this chat is structurally eligible to be the source of `moveChat`
- * changed.
- *
- * The host is authoritative and MUST also update the owning session's chat
- * catalog with `session/chatUpdated` so `ChatSummary.movable` stays in sync.
- * A chat referenced by its owning session's `defaultChat` MUST always carry
- * `movable: false`.
- *
- * @category Chat Actions
- * @version 1
- */
-export interface ChatMovableChangedAction {
-  type: ActionType.ChatMovableChanged;
-  /** Whether this chat is structurally eligible to be moved. */
-  movable: boolean;
-}
-
-/**
- * The {@link Changeset | catalogue of changesets} the agent host advertises
- * for this chat changed. Replaces
- * {@link ChatState.changesets | `state.changesets`} entirely
- * (full-replacement semantics) — set to `undefined` to clear the catalogue.
- *
- * Entries SHOULD describe Branch, Uncommitted Changes, or other views scoped
- * to the chat's effective {@link ChatState.workingDirectories | working
- * directories}. Clients subscribe to each advertised changeset URI for
- * file-level updates through the existing `changeset/*` action stream.
- *
- * @category Chat Actions
- * @version 1
- */
-export interface ChatChangesetsChangedAction {
-  type: ActionType.ChatChangesetsChanged;
-  /** New catalogue, or `undefined` to clear it. */
-  changesets: Changeset[] | undefined;
-}
-
-/**
- * The live canvas channels exposed by this chat changed.
- *
- * Replaces {@link ChatState.canvases | `state.canvases`} entirely. Set to
- * `undefined` to clear the collection.
- *
- * @category Chat Actions
- * @version 1
- */
-export interface ChatCanvasesChangedAction {
-  type: ActionType.ChatCanvasesChanged;
-  /** New canvas channel references, or `undefined` to clear the collection. */
-  canvases: CanvasReference[] | undefined;
 }
 
 /**
@@ -852,44 +729,6 @@ export interface ChatDraftChangedAction {
   draft?: Message;
 }
 
-/**
- * The read state of the chat changed.
- *
- * Dispatched by a client to mark any known chat, including the owning
- * session's default chat, as read (e.g. after viewing it) or unread. This
- * changes only the addressed chat; it does not change the read state of its
- * owning session or sibling chats. Use `session/isReadChanged` only to change
- * the owning session's independent read state. After accepting this action,
- * the host also synchronizes the addressed chat's `ChatSummary.status` and
- * `SessionChatSummary.status` projections.
- *
- * @category Chat Actions
- * @version 1
- * @clientDispatchable
- */
-export interface ChatIsReadChangedAction {
-  type: ActionType.ChatIsReadChanged;
-  /** Whether the chat has been read */
-  isRead: boolean;
-}
-
-/**
- * The archived state of the chat changed.
- *
- * Dispatched by a client to archive a chat independently of its owning
- * session or to restore it. Archiving the session's default chat is equivalent
- * to archiving the session and SHOULD use `session/isArchivedChanged` instead.
- *
- * @category Chat Actions
- * @version 1
- * @clientDispatchable
- */
-export interface ChatIsArchivedChangedAction {
-  type: ActionType.ChatIsArchivedChanged;
-  /** Whether the chat is archived */
-  isArchived: boolean;
-}
-
 // ─── Session Input Actions ──────────────────────────────────────────────────
 
 /**
@@ -965,13 +804,7 @@ export type ChatAction =
   | ChatTurnCompleteAction
   | ChatTurnCancelledAction
   | ChatErrorAction
-  | ChatTurnResumeAction
   | ChatActivityChangedAction
-  | ChatBackgroundWorkSetAction
-  | ChatBackgroundWorkRemovedAction
-  | ChatMovableChangedAction
-  | ChatChangesetsChangedAction
-  | ChatCanvasesChangedAction
   | ChatWorkingDirectorySetAction
   | ChatWorkingDirectoryRemovedAction
   | ChatUsageAction
@@ -982,8 +815,6 @@ export type ChatAction =
   | ChatPendingMessageRemovedAction
   | ChatQueuedMessagesReorderedAction
   | ChatDraftChangedAction
-  | ChatIsReadChangedAction
-  | ChatIsArchivedChangedAction
   | ChatInputRequestedAction
   | ChatInputAnswerChangedAction
   | ChatInputCompletedAction

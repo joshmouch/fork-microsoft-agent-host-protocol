@@ -57,7 +57,6 @@ type _ExpectedCommands =
   | 'createSession'
   | 'disposeSession'
   | 'createChat'
-  | 'moveChat'
   | 'disposeChat'
   | 'createTerminal'
   | 'disposeTerminal'
@@ -77,10 +76,7 @@ type _ExpectedCommands =
   | 'resolveSessionConfig'
   | 'sessionConfigCompletions'
   | 'completions'
-  | 'invokeChangesetOperation'
-  | 'listAutomationTriggerDefinitions'
-  | 'runAutomation'
-  | 'fetchAutomationRuns';
+  | 'invokeChangesetOperation';
 
 /** All methods annotated `@messageType Notification` (client → server). */
 type _ExpectedClientNotifications =

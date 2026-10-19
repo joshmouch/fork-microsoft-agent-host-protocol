@@ -14,6 +14,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",
@@ -56,6 +57,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",

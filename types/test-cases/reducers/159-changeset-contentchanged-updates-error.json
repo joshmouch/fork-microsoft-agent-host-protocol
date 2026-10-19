@@ -1,5 +1,5 @@
 {
-  "description": "changeset/contentChanged preserves lifecycle error information",
+  "description": "changeset/contentChanged updates error information",
   "reducer": "changeset",
   "initial": {
     "status": "error",
@@ -52,14 +52,18 @@
             }
           }
         }
-      ]
+      ],
+      "error": {
+        "errorType": "git",
+        "message": "new error"
+      }
     }
   ],
   "expected": {
     "status": "error",
     "error": {
       "errorType": "git",
-      "message": "old error"
+      "message": "new error"
     },
     "files": [
       {

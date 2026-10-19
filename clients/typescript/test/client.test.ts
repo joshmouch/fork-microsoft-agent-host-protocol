@@ -12,7 +12,6 @@ import assert from 'node:assert/strict';
 
 import {
   AhpClient,
-  AhpStateMirror,
   ClientClosedError,
   InMemoryTransport,
   RpcError,
@@ -40,13 +39,8 @@ import type {
   UnsubscribeParams,
 } from '../src/types/common/commands.js';
 import { JsonRpcErrorCodes } from '../src/types/common/errors.js';
-import { AutomationOperation, type AutomationEntry } from '../src/types/channels-automation/state.js';
-import { MessageKind } from '../src/types/channels-chat/state.js';
-import type { CanvasState } from '../src/types/channels-canvas/state.js';
-import type { Snapshot } from '../src/types/common/state.js';
 
 const ROOT = 'ahp-root://' as const;
-const AUTOMATIONS = 'ahp-automations://' as const;
 
 async function readRequest(server: AhpTransport): Promise<JsonRpcRequest> {
   const frame = await server.recv();
@@ -119,7 +113,6 @@ test('subscribe attaches before sending the request and fans out an action', asy
     delivery: { maxLatencyMs: 100 },
     view: { turns: 30 },
   });
-
   const req = await readRequest(s);
   assert.equal(req.method, 'subscribe');
   assert.equal((req.params as SubscribeParams).channel, 'ahp-session:/s1');
@@ -156,103 +149,6 @@ test('subscribe attaches before sending the request and fans out an action', asy
   assert.equal(event.params.serverSeq, 7);
 
   await client.shutdown();
-});
-
-test('state mirror replaces and clears live canvas sources', () => {
-  const mirror = new AhpStateMirror();
-  const resource = 'ahp-canvas:/preview';
-  const initial: CanvasState = {
-    instanceId: 'preview',
-    extensionId: 'project:preview',
-    canvasId: 'preview',
-    url: 'https://example.test/old',
-  };
-  mirror.applySnapshot({ resource, state: initial, fromSeq: 1 });
-  const replacement: CanvasState = { ...initial, url: 'https://example.test/new' };
-  mirror.apply({
-    channel: resource,
-    serverSeq: 2,
-    origin: undefined,
-    action: { type: ActionType.CanvasStateChanged, canvas: replacement },
-  });
-  const replaced = mirror.getCanvas(resource);
-  const unavailable: CanvasState = {
-    instanceId: 'preview',
-    extensionId: 'project:preview',
-    canvasId: 'preview',
-    status: 'Reconnecting',
-  };
-  mirror.apply({
-    channel: resource,
-    serverSeq: 3,
-    origin: undefined,
-    action: { type: ActionType.CanvasStateChanged, canvas: unavailable },
-  });
-  assert.deepEqual({ replaced, unavailable: mirror.canvases.get(resource) }, {
-    replaced: replacement,
-    unavailable,
-  });
-});
-
-test('state mirror rejects a non-canvas snapshot on a canvas channel', () => {
-  const mirror = new AhpStateMirror();
-  assert.throws(() => mirror.applySnapshot({
-    resource: 'ahp-canvas:/preview',
-    state: { agents: [] },
-    fromSeq: 1,
-  }), /Invalid canvas snapshot/);
-});
-
-test('state mirror rejects a canvas snapshot with a malformed source field', () => {
-  const mirror = new AhpStateMirror();
-  const malformed: Snapshot = JSON.parse('{"resource":"ahp-canvas:/preview","state":{"instanceId":"preview","extensionId":"project:preview","canvasId":"preview","url":42},"fromSeq":1}');
-  assert.throws(() => mirror.applySnapshot(malformed), /Invalid canvas snapshot/);
-});
-
-test('state mirror applies automation catalogue snapshots and actions', () => {
-  const mirror = new AhpStateMirror();
-  const automation: AutomationEntry = {
-    resource: 'ahp-automation:/a1',
-    definition: {
-      title: 'Daily triage',
-      message: { text: 'Triage issues', origin: { kind: MessageKind.Automation } },
-      session: {},
-      enabled: true,
-      triggers: [],
-    },
-    runs: [],
-    operations: [AutomationOperation.Run],
-    createdAt: '2026-08-01T00:00:00Z',
-    modifiedAt: '2026-08-01T00:00:00Z',
-  };
-
-  mirror.applySnapshot({
-    resource: AUTOMATIONS,
-    state: { entries: [automation] },
-    fromSeq: 0,
-  });
-  assert.equal(mirror.getAutomation(automation.resource)?.definition.title, 'Daily triage');
-
-  const updated: AutomationEntry = {
-    ...automation,
-    definition: { ...automation.definition, title: 'Updated triage' },
-    modifiedAt: '2026-08-02T00:00:00Z',
-  };
-  mirror.apply({
-    channel: AUTOMATIONS,
-    serverSeq: 1,
-    action: { type: ActionType.AutomationSet, automation: updated } as StateAction,
-    origin: null,
-  });
-  assert.equal(mirror.getAutomation(automation.resource)?.definition.title, 'Updated triage');
-
-  mirror.apply({
-    channel: AUTOMATIONS,
-    serverSeq: 2,
-    action: { type: ActionType.AutomationRemoved, resource: automation.resource } as StateAction,
-    origin: null,
-  });
-  assert.equal(mirror.getAutomation(automation.resource), undefined);
 });
 
 test('attachSubscription delivers events without a subscribe round-trip', async () => {

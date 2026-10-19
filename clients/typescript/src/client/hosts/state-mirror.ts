@@ -28,35 +28,25 @@
  * @module client/hosts/state-mirror
  */
 
-import { ActionType, type ActionEnvelope } from '../../types/common/actions.js';
+import type { ActionEnvelope } from '../../types/common/actions.js';
 import type { Snapshot, URI } from '../../types/common/state.js';
 import type {
   ChangesetAction,
-  AutomationAction,
-  AutomationRunAction,
   RootAction,
   SessionAction,
   TerminalAction,
 } from '../../types/action-origin.generated.js';
 import type { ChangesetState } from '../../types/channels-changeset/state.js';
-import type { CanvasState } from '../../types/channels-canvas/state.js';
 import type { RootState } from '../../types/channels-root/state.js';
 import type { SessionState } from '../../types/channels-session/state.js';
 import type { TerminalState } from '../../types/channels-terminal/state.js';
-import type { AutomationEntry, AutomationState } from '../../types/channels-automation/state.js';
-import type { AutomationRunState } from '../../types/channels-automation-run/state.js';
 import { changesetReducer } from '../../types/channels-changeset/reducer.js';
-import { canvasReducer } from '../../types/channels-canvas/reducer.js';
 import { rootReducer } from '../../types/channels-root/reducer.js';
 import { sessionReducer } from '../../types/channels-session/reducer.js';
 import { terminalReducer } from '../../types/channels-terminal/reducer.js';
-import { automationReducer } from '../../types/channels-automation/reducer.js';
-import { automationRunReducer } from '../../types/channels-automation-run/reducer.js';
 import { ROOT_RESOURCE_URI, type HostId, type HostSubscriptionEvent } from './types.js';
-import { isCanvasState } from '../canvas-state.js';
 
 const INITIAL_ROOT: RootState = { agents: [] };
-const AUTOMATIONS_URI = 'ahp-automations://' as const;
 
 /**
  * Compound key tagging a channel URI with the host that produced it.
@@ -106,12 +96,8 @@ function hostedResourceKeyPrefix(hostId: HostId): string {
 export class MultiHostStateMirror {
   private readonly rootStatesMap = new Map<HostId, RootState>();
   private readonly sessionsMap = new Map<string, SessionState>();
-  private readonly canvasesMap = new Map<string, CanvasState>();
   private readonly terminalsMap = new Map<string, TerminalState>();
   private readonly changesetsMap = new Map<string, ChangesetState>();
-  private readonly automationCatalogsMap = new Map<HostId, AutomationState>();
-  private readonly automationsMap = new Map<string, AutomationEntry>();
-  private readonly automationRunsMap = new Map<string, AutomationRunState>();
 
   /** All known root states keyed by host. */
   get rootStates(): ReadonlyMap<HostId, RootState> {
@@ -121,11 +107,6 @@ export class MultiHostStateMirror {
   /** All known session states keyed by `hostedResourceKey(hostId, uri)`. */
   get sessions(): ReadonlyMap<string, SessionState> {
     return this.sessionsMap;
-  }
-
-  /** Live canvases keyed by `hostedResourceKey(hostId, uri)`. */
-  get canvases(): ReadonlyMap<string, CanvasState> {
-    return this.canvasesMap;
   }
 
   /** All known terminal states keyed by `hostedResourceKey(hostId, uri)`. */
@@ -138,21 +119,6 @@ export class MultiHostStateMirror {
     return this.changesetsMap;
   }
 
-  /** Automation catalogue state keyed by host. */
-  get automationCatalogs(): ReadonlyMap<HostId, AutomationState> {
-    return this.automationCatalogsMap;
-  }
-
-  /** Catalogued automations keyed by `hostedResourceKey(hostId, resource)`. */
-  get automations(): ReadonlyMap<string, AutomationEntry> {
-    return this.automationsMap;
-  }
-
-  get automationRuns(): ReadonlyMap<string, AutomationRunState> {
-    return this.automationRunsMap;
-  }
-
-
   /** Look up the root state for `hostId`. */
   getRoot(hostId: HostId): RootState | undefined {
     return this.rootStatesMap.get(hostId);
@@ -163,10 +129,6 @@ export class MultiHostStateMirror {
     return this.sessionsMap.get(hostedResourceKey(hostId, uri));
   }
 
-  getCanvas(hostId: HostId, uri: URI): CanvasState | undefined {
-    return this.canvasesMap.get(hostedResourceKey(hostId, uri));
-  }
-
   /** Look up a terminal by `(hostId, uri)`. */
   getTerminal(hostId: HostId, uri: URI): TerminalState | undefined {
     return this.terminalsMap.get(hostedResourceKey(hostId, uri));
@@ -175,11 +137,6 @@ export class MultiHostStateMirror {
   /** Look up a changeset by `(hostId, uri)`. */
   getChangeset(hostId: HostId, uri: URI): ChangesetState | undefined {
     return this.changesetsMap.get(hostedResourceKey(hostId, uri));
-  }
-
-  /** Look up a catalogued automation by `(hostId, uri)`. */
-  getAutomation(hostId: HostId, uri: URI): AutomationEntry | undefined {
-    return this.automationsMap.get(hostedResourceKey(hostId, uri));
   }
 
   /**
@@ -214,13 +171,6 @@ export class MultiHostStateMirror {
       this.sessionsMap.set(key, sessionReducer(current, action as SessionAction));
       return;
     }
-    if (channel.startsWith('ahp-canvas:')) {
-      const key = hostedResourceKey(hostId, channel);
-      const current = this.canvasesMap.get(key);
-      if (current === undefined || action.type !== ActionType.CanvasStateChanged) return;
-      this.canvasesMap.set(key, canvasReducer(current, action));
-      return;
-    }
     if (channel.startsWith('ahp-terminal:')) {
       const key = hostedResourceKey(hostId, channel);
       const current = this.terminalsMap.get(key);
@@ -233,19 +183,6 @@ export class MultiHostStateMirror {
       const current = this.changesetsMap.get(key);
       if (!current) return;
       this.changesetsMap.set(key, changesetReducer(current, action as ChangesetAction));
-      return;
-    }
-    if (channel === AUTOMATIONS_URI) {
-      const current = this.automationCatalogsMap.get(hostId);
-      if (!current) return;
-      this.setAutomationCatalog(hostId, automationReducer(current, action as AutomationAction));
-      return;
-    }
-    if (channel.startsWith('ahp-automation-run:')) {
-      const key = hostedResourceKey(hostId, channel);
-      const current = this.automationRunsMap.get(key);
-      if (!current) return;
-      this.automationRunsMap.set(key, automationRunReducer(current, action as AutomationRunAction));
       return;
     }
   }
@@ -266,13 +203,6 @@ export class MultiHostStateMirror {
       this.sessionsMap.set(key, snapshot.state as SessionState);
       return;
     }
-    if (resource.startsWith('ahp-canvas:')) {
-      if (!isCanvasState(snapshot.state)) {
-        throw new Error('Invalid canvas snapshot state');
-      }
-      this.canvasesMap.set(key, snapshot.state);
-      return;
-    }
     if (resource.startsWith('ahp-terminal:')) {
       this.terminalsMap.set(key, snapshot.state as TerminalState);
       return;
@@ -281,26 +211,14 @@ export class MultiHostStateMirror {
       this.changesetsMap.set(key, snapshot.state as ChangesetState);
       return;
     }
-    if (resource === AUTOMATIONS_URI) {
-      this.setAutomationCatalog(hostId, snapshot.state as AutomationState);
-      return;
-    }
-    if (resource.startsWith('ahp-automation-run:')) {
-      this.automationRunsMap.set(key, snapshot.state as AutomationRunState);
-      return;
-    }
   }
 
   /** Drop every slot keyed under `hostId` — root, sessions, terminals, changesets. */
   resetHost(hostId: HostId): void {
     this.rootStatesMap.delete(hostId);
-    this.automationCatalogsMap.delete(hostId);
     const prefix = hostedResourceKeyPrefix(hostId);
     for (const key of this.sessionsMap.keys()) {
       if (key.startsWith(prefix)) this.sessionsMap.delete(key);
-    }
-    for (const key of this.canvasesMap.keys()) {
-      if (key.startsWith(prefix)) this.canvasesMap.delete(key);
     }
     for (const key of this.terminalsMap.keys()) {
       if (key.startsWith(prefix)) this.terminalsMap.delete(key);
@@ -308,34 +226,13 @@ export class MultiHostStateMirror {
     for (const key of this.changesetsMap.keys()) {
       if (key.startsWith(prefix)) this.changesetsMap.delete(key);
     }
-    for (const key of this.automationsMap.keys()) {
-      if (key.startsWith(prefix)) this.automationsMap.delete(key);
-    }
-    for (const key of this.automationRunsMap.keys()) {
-      if (key.startsWith(prefix)) this.automationRunsMap.delete(key);
-    }
   }
 
   /** Drop every host's state. */
   reset(): void {
     this.rootStatesMap.clear();
     this.sessionsMap.clear();
-    this.canvasesMap.clear();
     this.terminalsMap.clear();
     this.changesetsMap.clear();
-    this.automationCatalogsMap.clear();
-    this.automationsMap.clear();
-    this.automationRunsMap.clear();
-  }
-
-  private setAutomationCatalog(hostId: HostId, state: AutomationState): void {
-    this.automationCatalogsMap.set(hostId, state);
-    const prefix = hostedResourceKeyPrefix(hostId);
-    for (const key of this.automationsMap.keys()) {
-      if (key.startsWith(prefix)) this.automationsMap.delete(key);
-    }
-    for (const automation of state.entries) {
-      this.automationsMap.set(hostedResourceKey(hostId, automation.resource), automation);
-    }
   }
 }

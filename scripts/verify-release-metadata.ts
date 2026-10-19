@@ -109,9 +109,7 @@ function fail(mismatches: readonly Mismatch[]): never {
 /** Extracts `pub const PROTOCOL_VERSION: &str = "x.y.z";` from version.rs. */
 function rustVersionConstants(source: string): { current: string; supported: string[] } {
   const cur = source.match(/pub const PROTOCOL_VERSION: &str = "([^"]+)"/);
-  const sup = source.match(
-    /pub const SUPPORTED_PROTOCOL_VERSIONS: &\[&str\]\s*=\s*&\[([^\]]*)\]/,
-  );
+  const sup = source.match(/pub const SUPPORTED_PROTOCOL_VERSIONS: &\[&str\] = &\[([^\]]*)\]/);
   if (!cur || !sup) {
     throw new Error('rustVersionConstants: failed to parse version.rs');
   }
@@ -231,9 +229,7 @@ function main(): void {
     }
     const expected = computeReleaseMetadata(client, ROOT, registrySupported);
     const expectedSerialized = serializeReleaseMetadata(expected);
-    // Git may materialize text files with CRLF on Windows agents. Compare the
-    // JSON's canonical formatting independently of checkout line endings.
-    const actualSerialized = fs.readFileSync(metaPath, 'utf-8').replaceAll('\r\n', '\n');
+    const actualSerialized = fs.readFileSync(metaPath, 'utf-8');
 
     if (expectedSerialized !== actualSerialized) {
       // Parse the actual file for a more useful diff in the error message.

@@ -7,9 +7,6 @@
     "claim": {
       "kind": "client",
       "clientId": "c1"
-    },
-    "lifecycle": {
-      "status": "running"
     }
   },
   "actions": [
@@ -19,8 +16,7 @@
         "kind": "session",
         "session": "copilot:/session-1",
         "turnId": "turn-1",
-        "toolCallId": "tc-1",
-        "chat": "ahp-chat:/test-chat"
+        "toolCallId": "tc-1"
       }
     }
   ],
@@ -31,11 +27,7 @@
       "kind": "session",
       "session": "copilot:/session-1",
       "turnId": "turn-1",
-      "toolCallId": "tc-1",
-      "chat": "ahp-chat:/test-chat"
-    },
-    "lifecycle": {
-      "status": "running"
+      "toolCallId": "tc-1"
     }
   }
 }

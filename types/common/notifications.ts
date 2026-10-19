@@ -5,21 +5,17 @@
  * @module common/notifications
  */
 
-import type { ProtectedResourceMetadata, URI } from './state.js';
+import type { URI } from './state.js';
 
 /**
  * Reason why authentication is required.
  *
  * @category Protocol Notifications
- * @nonexhaustive
  */
 export const enum AuthRequiredReason {
   /** The client has not yet authenticated for the resource */
   Required = 'required',
-  /**
-   * A previously valid token has expired or been revoked. The client must
-   * acquire or renew the credential rather than replaying the challenged token.
-   */
+  /** A previously valid token has expired or been revoked */
   Expired = 'expired',
 }
 
@@ -31,12 +27,11 @@ export const enum AuthRequiredReason {
  * This notification MAY be associated with any channel — for example, an
  * agent advertised on the root channel, or a per-session resource. The
  * `channel` field identifies the subscription the auth requirement belongs
- * to; the `resource` field carries the complete OAuth protected resource
- * metadata (per RFC 9728).
+ * to; the `resource` field carries the OAuth-protected resource identifier
+ * (per RFC 9728).
  *
- * Clients should obtain or renew the credential and push the resulting token
- * via the `authenticate` command. When `reason` is `expired`, clients MUST NOT
- * blindly replay the challenged token.
+ * Clients should obtain a fresh token and push it via the `authenticate`
+ * command.
  *
  * @category Protocol Notifications
  * @method auth/required
@@ -51,11 +46,7 @@ export const enum AuthRequiredReason {
  *   "method": "auth/required",
  *   "params": {
  *     "channel": "ahp-root://",
- *     "resource": {
- *       "resource": "https://api.github.com",
- *       "resource_name": "GitHub API",
- *       "authorization_servers": ["https://github.com/login/oauth"]
- *     },
+ *     "resource": "https://api.github.com",
  *     "reason": "expired"
  *   }
  * }
@@ -64,8 +55,8 @@ export const enum AuthRequiredReason {
 export interface AuthRequiredParams {
   /** Channel URI this notification belongs to */
   channel: URI;
-  /** Complete RFC 9728 metadata for the protected resource that requires authentication */
-  resource: ProtectedResourceMetadata;
+  /** The protected resource identifier that requires authentication */
+  resource: string;
   /** Why authentication is required */
   reason?: AuthRequiredReason;
 }

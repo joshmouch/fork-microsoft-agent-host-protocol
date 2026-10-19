@@ -37,9 +37,7 @@
       "turnId": "turn-1",
       "toolCallId": "tc-4",
       "invocationMessage": "Search: foo",
-      "toolInput": {
-        "uri": "file:///tool-inputs/tool-input.json"
-      },
+      "toolInput": "foo",
       "confirmed": "not-needed"
     },
     {
@@ -74,9 +72,7 @@
             },
             "_meta": null,
             "invocationMessage": "Search: foo",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "foo",
             "confirmed": "not-needed"
           }
         }

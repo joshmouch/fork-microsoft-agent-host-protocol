@@ -1,5 +1,5 @@
 {
-  "description": "toolCallDelta appends input without changing invocationMessage when omitted",
+  "description": "toolCallDelta without invocationMessage preserves existing",
   "reducer": "chat",
   "initial": {
     "turns": [],
@@ -37,7 +37,7 @@
       "type": "chat/toolCallDelta",
       "turnId": "turn-1",
       "toolCallId": "tc-1",
-      "content": "{\"command\":\"ls"
+      "content": "data"
     }
   ],
   "expected": {
@@ -60,8 +60,8 @@
             "toolName": "bash",
             "displayName": "Run Command",
             "intention": null,
-            "partialInput": "{\"command\":\"ls",
-            "invocationMessage": "Original message"
+            "invocationMessage": "Original message",
+            "partialInput": "data"
           }
         }
       ],

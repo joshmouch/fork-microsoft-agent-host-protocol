@@ -2,9 +2,10 @@
  * Convenience reducer-driven state store, mirroring the Swift
  * `AHPStateMirror` and the Rust reducers example.
  *
- * Tracks root, session, canvas, terminal, changeset, automation catalogue, and
- * automation-run state. Apply {@link Snapshot}s and {@link ActionEnvelope}s and
- * the mirror keeps those resources up to date via the generated reducers.
+ * Tracks one {@link RootState}, a `Map<URI, SessionState>`, a
+ * `Map<URI, TerminalState>`, and a `Map<URI, ChangesetState>`. Apply
+ * {@link Snapshot}s and {@link ActionEnvelope}s and the mirror keeps
+ * those maps up to date via the generated reducers.
  *
  * Useful for simple clients. Larger apps will usually keep their own
  * state and call the reducers directly.
@@ -12,48 +13,33 @@
  * @module client/state-mirror
  */
 
-import { ActionType, type ActionEnvelope } from '../types/common/actions.js';
+import type { ActionEnvelope } from '../types/common/actions.js';
 import type { Snapshot, URI } from '../types/common/state.js';
 import type {
   ChangesetAction,
-  AutomationAction,
-  AutomationRunAction,
   RootAction,
   SessionAction,
   TerminalAction,
 } from '../types/action-origin.generated.js';
 import type { ChangesetState } from '../types/channels-changeset/state.js';
-import type { CanvasState } from '../types/channels-canvas/state.js';
 import type { RootState } from '../types/channels-root/state.js';
 import type { SessionState } from '../types/channels-session/state.js';
 import type { TerminalState } from '../types/channels-terminal/state.js';
-import type { AutomationEntry, AutomationState } from '../types/channels-automation/state.js';
-import type { AutomationRunState } from '../types/channels-automation-run/state.js';
 import { changesetReducer } from '../types/channels-changeset/reducer.js';
-import { canvasReducer } from '../types/channels-canvas/reducer.js';
 import { rootReducer } from '../types/channels-root/reducer.js';
 import { sessionReducer } from '../types/channels-session/reducer.js';
 import { terminalReducer } from '../types/channels-terminal/reducer.js';
-import { automationReducer } from '../types/channels-automation/reducer.js';
-import { automationRunReducer } from '../types/channels-automation-run/reducer.js';
-import { isCanvasState } from './canvas-state.js';
 
 const ROOT_URI = 'ahp-root://' as const;
-const AUTOMATIONS_URI = 'ahp-automations://' as const;
 
 const INITIAL_ROOT: RootState = { agents: [] };
-const INITIAL_AUTOMATION_CATALOG: AutomationState = { entries: [] };
 
 /** Reducer-driven state container synchronised with server events. */
 export class AhpStateMirror {
   private rootState: RootState = INITIAL_ROOT;
   private readonly sessionsMap = new Map<URI, SessionState>();
-  private readonly canvasesMap = new Map<URI, CanvasState>();
   private readonly terminalsMap = new Map<URI, TerminalState>();
   private readonly changesetsMap = new Map<URI, ChangesetState>();
-  private automationCatalogState: AutomationState = INITIAL_AUTOMATION_CATALOG;
-  private readonly automationsMap = new Map<URI, AutomationEntry>();
-  private readonly automationRunsMap = new Map<URI, AutomationRunState>();
 
   /** Current root state. */
   get root(): RootState {
@@ -63,11 +49,6 @@ export class AhpStateMirror {
   /** All known sessions keyed by URI. */
   get sessions(): ReadonlyMap<URI, SessionState> {
     return this.sessionsMap;
-  }
-
-  /** All known live canvases keyed by their channel URI. */
-  get canvases(): ReadonlyMap<URI, CanvasState> {
-    return this.canvasesMap;
   }
 
   /** All known terminals keyed by URI. */
@@ -80,38 +61,14 @@ export class AhpStateMirror {
     return this.changesetsMap;
   }
 
-  /** Current automation catalogue state. */
-  get automationCatalog(): AutomationState {
-    return this.automationCatalogState;
-  }
-
-  /** All catalogued automations keyed by their stable resource URI. */
-  get automations(): ReadonlyMap<URI, AutomationEntry> {
-    return this.automationsMap;
-  }
-
-  get automationRuns(): ReadonlyMap<URI, AutomationRunState> {
-    return this.automationRunsMap;
-  }
-
-
   /** Look up a session by URI. */
   getSession(uri: URI): SessionState | undefined {
     return this.sessionsMap.get(uri);
   }
 
-  getCanvas(uri: URI): CanvasState | undefined {
-    return this.canvasesMap.get(uri);
-  }
-
   /** Look up a terminal by URI. */
   getTerminal(uri: URI): TerminalState | undefined {
     return this.terminalsMap.get(uri);
-  }
-
-  /** Look up a catalogued automation by URI. */
-  getAutomation(uri: URI): AutomationEntry | undefined {
-    return this.automationsMap.get(uri);
   }
 
   /**
@@ -128,27 +85,12 @@ export class AhpStateMirror {
       this.sessionsMap.set(resource, snapshot.state as SessionState);
       return;
     }
-    if (resource.startsWith('ahp-canvas:')) {
-      if (!isCanvasState(snapshot.state)) {
-        throw new Error('Invalid canvas snapshot state');
-      }
-      this.canvasesMap.set(resource, snapshot.state);
-      return;
-    }
     if (resource.startsWith('ahp-terminal:')) {
       this.terminalsMap.set(resource, snapshot.state as TerminalState);
       return;
     }
     if (resource.startsWith('ahp-changeset:')) {
       this.changesetsMap.set(resource, snapshot.state as ChangesetState);
-      return;
-    }
-    if (resource === AUTOMATIONS_URI) {
-      this.setAutomationCatalog(snapshot.state as AutomationState);
-      return;
-    }
-    if (resource.startsWith('ahp-automation-run:')) {
-      this.automationRunsMap.set(resource, snapshot.state as AutomationRunState);
       return;
     }
   }
@@ -175,12 +117,6 @@ export class AhpStateMirror {
       this.sessionsMap.set(channel, sessionReducer(current, action as SessionAction));
       return;
     }
-    if (channel.startsWith('ahp-canvas:')) {
-      const current = this.canvasesMap.get(channel);
-      if (current === undefined || action.type !== ActionType.CanvasStateChanged) return;
-      this.canvasesMap.set(channel, canvasReducer(current, action));
-      return;
-    }
     if (channel.startsWith('ahp-terminal:')) {
       const current = this.terminalsMap.get(channel);
       if (!current) return;
@@ -192,24 +128,6 @@ export class AhpStateMirror {
       if (!current) return;
       this.changesetsMap.set(channel, changesetReducer(current, action as ChangesetAction));
       return;
-    }
-    if (channel === AUTOMATIONS_URI) {
-      this.setAutomationCatalog(automationReducer(this.automationCatalogState, action as AutomationAction));
-      return;
-    }
-    if (channel.startsWith('ahp-automation-run:')) {
-      const current = this.automationRunsMap.get(channel);
-      if (!current) return;
-      this.automationRunsMap.set(channel, automationRunReducer(current, action as AutomationRunAction));
-      return;
-    }
-  }
-
-  private setAutomationCatalog(state: AutomationState): void {
-    this.automationCatalogState = state;
-    this.automationsMap.clear();
-    for (const automation of state.entries) {
-      this.automationsMap.set(automation.resource, automation);
     }
   }
 }

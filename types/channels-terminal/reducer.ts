@@ -6,7 +6,6 @@
 
 import { ActionType } from '../common/actions.js';
 import type { TerminalState, TerminalContentPart } from './state.js';
-import { TerminalLifecycleStatus } from './state.js';
 import type { TerminalAction } from '../action-origin.generated.js';
 import { softAssertNever } from '../common/reducer-helpers.js';
 
@@ -46,13 +45,7 @@ export function terminalReducer(state: TerminalState, action: TerminalAction, lo
       return { ...state, cwd: action.cwd };
 
     case ActionType.TerminalExited:
-      return {
-        ...state,
-        lifecycle: {
-          status: TerminalLifecycleStatus.Exited,
-          exitCode: action.exitCode,
-        },
-      };
+      return { ...state, exitCode: action.exitCode };
 
     case ActionType.TerminalCleared:
       return { ...state, content: [] };

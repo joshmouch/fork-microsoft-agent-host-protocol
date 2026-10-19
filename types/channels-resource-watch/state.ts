@@ -2,8 +2,6 @@
  * Resource-Watch Channel State Types — Per-watch state exposed on
  * `ahp-resource-watch:` channels.
  *
- * Stability: 2 - Stable
- *
  * @module channels-resource-watch/state
  */
 
@@ -54,7 +52,6 @@ export interface ResourceWatchState {
  * Discriminant for {@link ResourceChange.type}.
  *
  * @category Resource Watch Types
- * @exhaustive
  */
 export const enum ResourceChangeType {
   Added = 'added',

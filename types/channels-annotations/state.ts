@@ -6,8 +6,6 @@
  * derived from the session URI by appending `/annotations` and is also
  * surfaced explicitly on {@link AnnotationsSummary.resource} for badge UI.
  *
- * Stability: 1.1 - Active development
- *
  * @module channels-annotations/state
  */
 
@@ -49,29 +47,17 @@ export interface AnnotationsState {
   annotations: Annotation[];
 }
 
-/**
- * Provenance of the content an annotation is anchored to.
- *
- * @category Annotations
- */
-export interface AnnotationOrigin {
-  /** Owning session URI. */
-  session: URI;
-  /** Owning chat URI, when the annotation is scoped to a chat. */
-  chat?: URI;
-  /** Turn identifier within {@link chat}, when the annotation is scoped to a turn. */
-  turnId?: string;
-}
-
 // ─── Annotation ──────────────────────────────────────────────────────────────
 
 /**
- * A conversation anchored to a specific file in a session, optionally scoped
- * to a chat and turn and narrowed to a range within that file.
+ * A conversation anchored to a specific file produced by a specific turn,
+ * optionally narrowed to a range within that file.
  *
- * {@link origin} identifies the owning session and, when available, the chat
- * and turn that produced the file version. When {@link range} is omitted the
- * annotation is anchored to the entire file.
+ * {@link turnId} anchors the annotation to the file versions that turn
+ * produced, so a later turn that rewrites the same file does not silently
+ * invalidate the annotation's anchor — clients can resolve {@link resource}
+ * and {@link range} against the turn's changeset. When {@link range} is
+ * omitted the annotation is anchored to the entire file.
  *
  * Every annotation MUST contain at least one {@link AnnotationEntry}. An
  * {@link AnnotationsSetAction} that creates an annotation therefore carries
@@ -87,8 +73,11 @@ export interface Annotation {
    * that dispatches the creating {@link AnnotationsSetAction}.
    */
   id: string;
-  /** Provenance of the content this annotation is anchored to. */
-  origin: AnnotationOrigin;
+  /**
+   * Turn that produced the file versions this annotation is anchored to.
+   * Matches a {@link Turn.id} on the owning session.
+   */
+  turnId: string;
   /** The file the annotation is anchored to. */
   resource: URI;
   /**

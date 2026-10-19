@@ -1,6 +1,6 @@
 {
   "name": "agent-host-protocol",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -13,19 +13,17 @@
     "generate:kotlin": "tsx scripts/generate.ts --kotlin",
     "generate:typescript": "tsx scripts/generate.ts --typescript",
     "generate:go": "tsx scripts/generate.ts --go",
-    "generate:dotnet": "tsx scripts/generate.ts --dotnet",
     "generate:metadata": "tsx scripts/generate.ts --metadata",
     "verify:release-metadata": "tsx scripts/verify-release-metadata.ts",
     "verify:changelog": "tsx scripts/verify-changelog.ts",
     "verify:change-fragments": "tsx scripts/verify-change-fragments.ts",
     "changelog:release": "tsx scripts/consume-change-fragments.ts",
-    "verify:generated": "tsx scripts/verify-generated.ts",
     "docs:dev": "vitepress dev docs",
     "docs:build": "npm run generate && vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "typecheck": "tsc --noEmit -p types/tsconfig.json",
     "lint": "eslint",
-    "test": "npm run typecheck && npm run lint && npm run verify:release-metadata && npm run verify:changelog && npm run verify:change-fragments && npm run verify:generated && npx c8 --include types/reducers.ts --check-coverage --branches 100 tsx --test types/*.test.ts types/version/*.test.ts clients/dotnet/codegen/telemetry/*.test.ts scripts/*.test.ts"
+    "test": "npm run typecheck && npm run lint && npm run verify:release-metadata && npm run verify:changelog && npm run verify:change-fragments && npx c8 --include types/reducers.ts --check-coverage --branches 100 tsx --test types/*.test.ts types/version/*.test.ts scripts/*.test.ts"
   },
   "repository": {
     "type": "git",
@@ -41,7 +39,6 @@
   "homepage": "https://github.com/microsoft/agent-host-protocol#readme",
   "devDependencies": {
     "@types/node": "^25.5.0",
-    "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.57.2",
     "@typescript-eslint/parser": "^8.57.2",
     "c8": "^11.0.0",
@@ -51,7 +48,6 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitepress": "^1.6.4",
-    "vitepress-plugin-mermaid": "^2.0.17",
-    "ws": "^8.21.3"
+    "vitepress-plugin-mermaid": "^2.0.17"
   }
 }

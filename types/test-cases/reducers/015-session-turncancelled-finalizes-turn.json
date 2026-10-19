@@ -41,7 +41,8 @@
         },
         "responseParts": [],
         "usage": null,
-        "state": "cancelled"
+        "state": "cancelled",
+        "error": null
       }
     ],
     "activeTurn": null,

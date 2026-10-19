@@ -15,9 +15,8 @@ import type { ChangesetOperationStatus } from './state.js';
 
 /**
  * The {@link ChangesetState.status} for this changeset transitioned (e.g.
- * `computing → ready` or `recomputing → ready`). The error payload is set
- * together with `status` whenever it transitions to
- * {@link ChangesetStatus.Error | Error}.
+ * `computing → ready`). The error payload is set together with `status`
+ * whenever it transitions to {@link ChangesetStatus.Error | Error}.
  *
  * @category Changeset Actions
  * @version 2
@@ -111,6 +110,8 @@ export interface ChangesetContentChangedAction {
   files: ChangesetFile[];
   /** Full replacement operation list. Omit when operations are unchanged. */
   operations?: ChangesetOperation[];
+  /** Error information, if the changeset content change failed. */
+  error?: ErrorInfo;
 }
 
 /**

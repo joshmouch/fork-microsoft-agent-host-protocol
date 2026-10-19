@@ -56,8 +56,6 @@ import type {
 } from '../channels-session/commands.js';
 import type {
   CreateChatParams,
-  MoveChatParams,
-  MoveChatResult,
   DisposeChatParams,
 } from '../channels-chat/commands.js';
 import type {
@@ -72,14 +70,6 @@ import type {
   InvokeChangesetOperationParams,
   InvokeChangesetOperationResult,
 } from '../channels-changeset/commands.js';
-import type {
-  ListAutomationTriggerDefinitionsParams,
-  ListAutomationTriggerDefinitionsResult,
-  RunAutomationParams,
-  RunAutomationResult,
-  FetchAutomationRunsParams,
-  FetchAutomationRunsResult,
-} from '../channels-automation/commands.js';
 
 import type { ActionEnvelope } from './actions.js';
 import type {
@@ -164,7 +154,6 @@ export interface CommandMap {
   'createSession': { params: CreateSessionParams; result: null };
   'disposeSession': { params: DisposeSessionParams; result: null };
   'createChat': { params: CreateChatParams; result: null };
-  'moveChat': { params: MoveChatParams; result: MoveChatResult };
   'disposeChat': { params: DisposeChatParams; result: null };
   'createTerminal': { params: CreateTerminalParams; result: null };
   'disposeTerminal': { params: DisposeTerminalParams; result: null };
@@ -185,9 +174,6 @@ export interface CommandMap {
   'sessionConfigCompletions': { params: SessionConfigCompletionsParams; result: SessionConfigCompletionsResult };
   'completions': { params: CompletionsParams; result: CompletionsResult };
   'invokeChangesetOperation': { params: InvokeChangesetOperationParams; result: InvokeChangesetOperationResult };
-  'listAutomationTriggerDefinitions': { params: ListAutomationTriggerDefinitionsParams; result: ListAutomationTriggerDefinitionsResult };
-  'runAutomation': { params: RunAutomationParams; result: RunAutomationResult };
-  'fetchAutomationRuns': { params: FetchAutomationRunsParams; result: FetchAutomationRunsResult };
 }
 
 /**

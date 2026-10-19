@@ -12,6 +12,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",
@@ -29,12 +30,7 @@
     {
       "type": "session/customizationToggled",
       "id": "does-not-exist",
-      "enablement": [
-        {
-          "kind": "session",
-          "enabled": false
-        }
-      ]
+      "enabled": false
     }
   ],
   "expected": {
@@ -48,6 +44,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "children": [
           {
             "type": "skill",

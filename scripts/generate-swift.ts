@@ -22,10 +22,6 @@ import fs from 'fs';
 import path from 'path';
 import { findProtocolSourceFiles } from './find-protocol-sources.js';
 import { readProtocolVersions } from './read-protocol-versions.js';
-import {
-  discriminatedUnionAllowsUnknown,
-  getEnumCompatibility,
-} from './enum-compatibility.js';
 
 const GENERATED_HEADER = '// Generated from types/*.ts — do not edit\n\nimport Foundation\n';
 
@@ -108,7 +104,6 @@ function mapType(tsType: string, propName?: string, containerName?: string): str
   // Type aliases
   if (tsType === 'URI') return 'String';
   if (tsType === 'StringOrMarkdown') return 'StringOrMarkdown';
-  if (tsType === 'ToolInput') return 'ToolInput';
   // ChildCustomizationType is a TS-only subset alias of CustomizationType.
   if (tsType === 'ChildCustomizationType') return 'CustomizationType';
 
@@ -119,8 +114,6 @@ function mapType(tsType: string, propName?: string, containerName?: string): str
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | AnnotationsState'
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState'
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState'
-    || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | AutomationState | AutomationRunState'
-    || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | CanvasState | AutomationState | AutomationRunState'
     || tsType === 'RootState | SessionState | ChatState'
     || tsType === 'RootState | SessionState | ChatState | TerminalState'
     || tsType === 'RootState | SessionState | ChatState | TerminalState | ChangesetState'
@@ -306,7 +299,6 @@ function generateSwiftEnum(enumDecl: EnumDeclaration): string {
   const desc = enumDecl.getJsDocs()[0]?.getDescription().trim();
   const values = enumDecl.getMembers().map(member => member.getValue());
   const rawType = values.every(value => typeof value === 'number') ? 'Int' : 'String';
-  const isNonexhaustive = getEnumCompatibility(enumDecl) === 'nonexhaustive';
 
   // Bitset enums (detected via JSDoc convention "Bitset of …") are emitted
   // as Swift `OptionSet` structs so OR'd combinations are representable and
@@ -336,45 +328,6 @@ function generateSwiftEnum(enumDecl: EnumDeclaration): string {
       }
       lines.push(`    public static let ${memberName} = ${name}(rawValue: ${value})`);
     }
-    lines.push('}');
-    return lines.join('\n');
-  }
-
-  if (isNonexhaustive) {
-    lines.push(`public enum ${name}: Codable, Sendable, Equatable {`);
-    for (const member of enumDecl.getMembers()) {
-      const memberName = swiftIdentifier(toCamelCase(member.getName()));
-      const memberDoc = member.getJsDocs()[0]?.getDescription().trim();
-      if (memberDoc) {
-        for (const docLine of memberDoc.split('\n')) {
-          lines.push(emitSwiftDocLine(docLine, '    '));
-        }
-      }
-      lines.push(`    case ${memberName}`);
-    }
-    lines.push(`    /// Unknown raw value from a newer protocol version, preserved verbatim.`);
-    lines.push(`    case unknown(${rawType})`);
-    lines.push('');
-    lines.push('    public init(from decoder: Decoder) throws {');
-    lines.push('        let container = try decoder.singleValueContainer()');
-    lines.push(`        let raw = try container.decode(${rawType}.self)`);
-    lines.push('        switch raw {');
-    for (const member of enumDecl.getMembers()) {
-      lines.push(`        case ${JSON.stringify(member.getValue())}: self = .${swiftIdentifier(toCamelCase(member.getName()))}`);
-    }
-    lines.push('        default: self = .unknown(raw)');
-    lines.push('        }');
-    lines.push('    }');
-    lines.push('');
-    lines.push('    public func encode(to encoder: Encoder) throws {');
-    lines.push('        var container = encoder.singleValueContainer()');
-    lines.push('        switch self {');
-    for (const member of enumDecl.getMembers()) {
-      lines.push(`        case .${swiftIdentifier(toCamelCase(member.getName()))}: try container.encode(${JSON.stringify(member.getValue())})`);
-    }
-    lines.push('        case .unknown(let raw): try container.encode(raw)');
-    lines.push('        }');
-    lines.push('    }');
     lines.push('}');
     return lines.join('\n');
   }
@@ -492,27 +445,16 @@ interface UnionConfig {
    * ChangesetOperationTarget, ReconnectResult).
    */
   allowUnknown?: boolean;
-  /** Discriminator enum when a generated wrapper lacks the field itself. */
-  discriminatorEnum?: string;
-  /** Force the enum case's discriminator when encoding its payload. */
-  injectDiscriminantOnEncode?: boolean;
 }
 
-function generateDiscriminatedUnion(project: Project, config: UnionConfig): string {
-  const allowUnknown = discriminatedUnionAllowsUnknown(
-    project,
-    config.discriminantField,
-    config.variants.map(variant => variant.structName),
-    config.allowUnknown,
-    config.discriminatorEnum,
-  );
+function generateDiscriminatedUnion(config: UnionConfig): string {
   const lines: string[] = [];
   lines.push(`public enum ${config.name}: Codable, Sendable {`);
 
   for (const v of config.variants) {
     lines.push(`    case ${v.caseName}(${v.structName})`);
   }
-  if (allowUnknown) {
+  if (config.allowUnknown) {
     lines.push('    /// Unknown or future discriminant; the raw payload is preserved');
     lines.push('    /// and re-encoded verbatim for forward-compatibility.');
     lines.push('    case unknown(AnyCodable)');
@@ -527,21 +469,14 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
   lines.push('');
   lines.push('    public init(from decoder: Decoder) throws {');
   lines.push('        let container = try decoder.container(keyedBy: DiscriminantKey.self)');
-  if (allowUnknown) {
-    lines.push('        guard let discriminant = try container.decodeIfPresent(String.self, forKey: .discriminant) else {');
-    lines.push('            self = .unknown(try AnyCodable(from: decoder))');
-    lines.push('            return');
-    lines.push('        }');
-  } else {
-    lines.push('        let discriminant = try container.decode(String.self, forKey: .discriminant)');
-  }
+  lines.push('        let discriminant = try container.decode(String.self, forKey: .discriminant)');
   lines.push('        switch discriminant {');
   for (const v of config.variants) {
     lines.push(`        case ${JSON.stringify(v.discriminantValue)}:`);
     lines.push(`            self = .${v.caseName}(try ${v.structName}(from: decoder))`);
   }
   lines.push('        default:');
-  if (allowUnknown) {
+  if (config.allowUnknown) {
     lines.push('            self = .unknown(try AnyCodable(from: decoder))');
   } else {
     lines.push(`            throw DecodingError.dataCorruptedError(forKey: .discriminant, in: container, debugDescription: "Unknown ${config.name} discriminant: \\(discriminant)")`);
@@ -554,15 +489,9 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
   lines.push('    public func encode(to encoder: Encoder) throws {');
   lines.push('        switch self {');
   for (const v of config.variants) {
-    if (config.injectDiscriminantOnEncode) {
-      lines.push(`        case .${v.caseName}(var value):`);
-      lines.push(`            value.${config.discriminantField} = .${v.caseName}`);
-      lines.push('            try value.encode(to: encoder)');
-    } else {
-      lines.push(`        case .${v.caseName}(let value): try value.encode(to: encoder)`);
-    }
+    lines.push(`        case .${v.caseName}(let value): try value.encode(to: encoder)`);
   }
-  if (allowUnknown) {
+  if (config.allowUnknown) {
     lines.push('        case .unknown(let value): try value.encode(to: encoder)');
   }
   lines.push('        }');
@@ -584,69 +513,6 @@ function generateStructFromInterface(
   const name = swiftNameOverride ?? tsInterfaceName;
   const props = extractProps(iface, project);
   return generateSwiftStruct(name, props);
-}
-
-function generateFixedChatSourceBranchSwift(
-  name: 'ForkChatSource' | 'SideChatSource',
-  kindCase: 'fork' | 'sideChat',
-  doc: string,
-  turnIdDoc: string,
-): string {
-  const hasSelection = name === 'SideChatSource';
-  const lines = [
-    ...doc.split('\n').map(line => emitSwiftDocLine(line)),
-    `public struct ${name}: Codable, Sendable {`,
-    '    /// Discriminant',
-    `    public var kind: ChatSourceKind { .${kindCase} }`,
-    '    /// URI of the existing source chat.',
-    '    public var chat: URI',
-    ...turnIdDoc.split('\n').map(line => emitSwiftDocLine(line, '    ')),
-    '    public var turnId: String',
-    ...(hasSelection
-      ? [
-          ...'Optional immutable selected-text snapshot to carry into the created side\nchat\'s origin.'.split('\n').map(line => emitSwiftDocLine(line, '    ')),
-          '    public var selection: SideChatSelection?',
-        ]
-      : []),
-    '',
-    '    private enum CodingKeys: String, CodingKey {',
-    '        case kind',
-    '        case chat',
-    '        case turnId',
-    ...(hasSelection ? ['        case selection'] : []),
-    '    }',
-    '',
-    '    public init(',
-    '        chat: URI,',
-    '        turnId: String' + (hasSelection ? ',' : ''),
-    ...(hasSelection ? ['        selection: SideChatSelection? = nil'] : []),
-    '    ) {',
-    '        self.chat = chat',
-    '        self.turnId = turnId',
-    ...(hasSelection ? ['        self.selection = selection'] : []),
-    '    }',
-    '',
-    '    public init(from decoder: Decoder) throws {',
-    '        let container = try decoder.container(keyedBy: CodingKeys.self)',
-    '        let kind = try container.decode(ChatSourceKind.self, forKey: .kind)',
-    `        guard kind == .${kindCase} else {`,
-    `            throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Expected ${name} kind ${kindCase}")`,
-    '        }',
-    '        self.chat = try container.decode(URI.self, forKey: .chat)',
-    '        self.turnId = try container.decode(String.self, forKey: .turnId)',
-    ...(hasSelection ? ['        self.selection = try container.decodeIfPresent(SideChatSelection.self, forKey: .selection)'] : []),
-    '    }',
-    '',
-    '    public func encode(to encoder: Encoder) throws {',
-    '        var container = encoder.container(keyedBy: CodingKeys.self)',
-    `        try container.encode(ChatSourceKind.${kindCase}, forKey: .kind)`,
-    '        try container.encode(chat, forKey: .chat)',
-    '        try container.encode(turnId, forKey: .turnId)',
-    ...(hasSelection ? ['        try container.encodeIfPresent(selection, forKey: .selection)'] : []),
-    '    }',
-    '}',
-  ];
-  return lines.join('\n');
 }
 
 /**
@@ -679,15 +545,9 @@ const STATE_ENUMS = [
   'ToolCallRiskAssessmentStatus',
   'ToolCallCancellationReason', 'ConfirmationOptionKind',
   'ToolCallContributorKind',
-  'ToolResultContentType', 'CustomizationType', 'CustomizationEnablementKind', 'CustomizationLoadStatus',
-  'TerminalClaimKind', 'TerminalLifecycleStatus',
-  'BackgroundWorkKind',
+  'ToolResultContentType', 'CustomizationType', 'CustomizationLoadStatus', 'TerminalClaimKind',
   'McpServerStatus', 'McpAuthRequiredReason',
   'ChangesetStatus', 'ChangesetOperationStatus', 'ChangesetOperationScope', 'ResourceChangeType',
-  'SessionOriginKind',
-  'AutomationOperation', 'AutomationMisfirePolicy', 'AutomationTriggerKind',
-  'AutomationDisableConditionKind',
-  'AutomationRunStatus', 'AutomationRunOriginKind',
 ];
 
 const STATE_STRUCTS = [
@@ -696,11 +556,10 @@ const STATE_STRUCTS = [
   'MultipleChatsCapability',
   'MultipleWorkingDirectoriesCapability',
   'SessionModelInfo', 'ModelSelection', 'AgentSelection', 'ConfigPropertySchema', 'ConfigSchema',
-  'PendingMessage', 'ChatState', 'ChatSummary', 'SideChatSelection', 'SessionState', 'SessionActiveClient',
-  'BackgroundShellWork', 'BackgroundSubagentWork',
+  'PendingMessage', 'ChatState', 'ChatSummary', 'SessionState', 'SessionActiveClient',
   'SessionChatInputRequest', 'SessionToolConfirmationRequest', 'SessionToolClientExecutionRequest',
   'SessionToolAuthenticationRequest',
-  'SessionSummary', 'SessionChatSummary', 'ChangesSummary', 'ProjectInfo', 'SessionConfigState', 'Turn', 'ActiveTurn', 'Message',
+  'SessionSummary', 'ChangesSummary', 'ProjectInfo', 'SessionConfigState', 'Turn', 'ActiveTurn', 'Message',
   'MessageOrigin',
   'ChatInputOption',
   'ChatInputTextAnswerValue', 'ChatInputNumberAnswerValue',
@@ -713,11 +572,10 @@ const STATE_STRUCTS = [
   'ChatInputRequest',
   'TextPosition', 'TextRange', 'TextSelection',
   'SimpleMessageAttachment', 'MessageEmbeddedResourceAttachment', 'MessageResourceAttachment',
-  'MessageAnnotationsAttachment', 'MessageChatAttachment',
+  'MessageAnnotationsAttachment',
   'MarkdownResponsePart', 'ContentRef',
-  'ResourceResponsePart', 'ToolCallResponsePart', 'ReasoningResponsePart',
+  'ResourceReponsePart', 'ToolCallResponsePart', 'ReasoningResponsePart',
   'SystemNotificationResponsePart', 'InputRequestResponsePart',
-  'ErrorResponsePart',
   'ToolCallResult', 'ToolCallStreamingState',
   'ToolCallPendingConfirmationState', 'ToolCallRunningState', 'ToolCallAuthRequiredState',
   'ToolCallPendingResultConfirmationState', 'ToolCallCompletedState',
@@ -726,7 +584,7 @@ const STATE_STRUCTS = [
   'ToolDefinition', 'ToolAnnotations',
   'ToolResultTextContent', 'ToolResultEmbeddedResourceContent',
   'ToolResultResourceContent', 'ToolResultFileEditContent',
-  'ToolResultTerminalContent',
+  'ToolResultTerminalContent', 'ToolResultTerminalCompleteContent',
   'ToolResultSubagentContent',
   'CustomizationLoadingState', 'CustomizationLoadedState',
   'CustomizationDegradedState', 'CustomizationErrorState',
@@ -737,29 +595,14 @@ const STATE_STRUCTS = [
   'McpServerStartingState', 'McpServerReadyState', 'McpServerAuthRequiredState',
   'McpServerErrorState', 'McpServerStoppedState', 'McpOAuthClient', 'McpAuthRequirement',
   'ToolCallClientContributor', 'ToolCallMcpContributor',
-  'FileEditSide', 'FileEditDiffStats', 'FileEdit', 'FileEditCollection',
-  'TerminalCommandResult', 'TerminalInfo',
-  'TerminalClientClaim', 'TerminalSessionClaim',
-  'TerminalRunningLifecycleState', 'TerminalExitedLifecycleState', 'TerminalState',
+  'FileEdit', 'TerminalInfo',
+  'TerminalClientClaim', 'TerminalSessionClaim', 'TerminalState',
   'TerminalUnclassifiedPart', 'TerminalCommandPart',
   'UsageInfo', 'ErrorInfo', 'Snapshot',
-  'CanvasReference', 'CanvasState',
   'Changeset', 'ChangesetCapabilities', 'ChangesetState', 'ChangesetFile', 'ChangesetOperation',
-  'AnnotationsSummary', 'AnnotationsState', 'AnnotationOrigin', 'Annotation', 'AnnotationEntry',
+  'AnnotationsSummary', 'AnnotationsState', 'Annotation', 'AnnotationEntry',
   'TelemetryCapabilities',
   'ResourceWatchState', 'ResourceChange',
-  'AutomationSessionOrigin', 'AutomationSchedule',
-  'AutomationScheduleTrigger', 'AutomationEventTrigger',
-  'AutomationTriggerEventDefinition', 'AutomationTriggerDefinition',
-  'AutomationSessionTemplate', 'AutomationDefinition',
-  'AutomationDefinitionPatch',
-  'AutomationAfterRunsCondition', 'AutomationAfterDateCondition',
-  'AutomationEntry', 'AutomationState',
-  'AutomationManualRunOrigin', 'AutomationTriggeredRunOrigin',
-  'AutomationPendingRunLifecycle', 'AutomationRunningRunLifecycle',
-  'AutomationCompletedRunLifecycle',
-  'AutomationFailedRunLifecycle', 'AutomationCancelledRunLifecycle',
-  'AutomationRunSummary', 'AutomationRunState',
 ];
 
 const RESPONSE_PART_UNION: UnionConfig = {
@@ -772,12 +615,11 @@ const RESPONSE_PART_UNION: UnionConfig = {
   allowUnknown: true,
   variants: [
     { caseName: 'markdown', structName: 'MarkdownResponsePart', discriminantValue: 'markdown' },
-    { caseName: 'contentRef', structName: 'ResourceResponsePart', discriminantValue: 'contentRef' },
+    { caseName: 'contentRef', structName: 'ResourceReponsePart', discriminantValue: 'contentRef' },
     { caseName: 'toolCall', structName: 'ToolCallResponsePart', discriminantValue: 'toolCall' },
     { caseName: 'reasoning', structName: 'ReasoningResponsePart', discriminantValue: 'reasoning' },
     { caseName: 'systemNotification', structName: 'SystemNotificationResponsePart', discriminantValue: 'systemNotification' },
     { caseName: 'inputRequest', structName: 'InputRequestResponsePart', discriminantValue: 'inputRequest' },
-    { caseName: 'error', structName: 'ErrorResponsePart', discriminantValue: 'error' },
   ],
 };
 
@@ -882,7 +724,6 @@ const MESSAGE_ATTACHMENT_UNION: UnionConfig = {
     { caseName: 'embeddedResource', structName: 'MessageEmbeddedResourceAttachment', discriminantValue: 'embeddedResource' },
     { caseName: 'resource', structName: 'MessageResourceAttachment', discriminantValue: 'resource' },
     { caseName: 'annotations', structName: 'MessageAnnotationsAttachment', discriminantValue: 'annotations' },
-    { caseName: 'chat', structName: 'MessageChatAttachment', discriminantValue: 'chat' },
   ],
 };
 
@@ -961,15 +802,6 @@ const TOOL_CALL_RISK_ASSESSMENT_UNION: UnionConfig = {
   ],
 };
 
-const TERMINAL_LIFECYCLE_STATE_UNION: UnionConfig = {
-  name: 'TerminalLifecycleState',
-  discriminantField: 'status',
-  variants: [
-    { caseName: 'running', structName: 'TerminalRunningLifecycleState', discriminantValue: 'running' },
-    { caseName: 'exited', structName: 'TerminalExitedLifecycleState', discriminantValue: 'exited' },
-  ],
-};
-
 const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
   name: 'SessionInputRequest',
   discriminantField: 'kind',
@@ -983,17 +815,6 @@ const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
   ],
 };
 
-const BACKGROUND_WORK_UNION: UnionConfig = {
-  name: 'BackgroundWork',
-  discriminantField: 'kind',
-  // Open union: future protocol versions may add new background work kinds.
-  allowUnknown: true,
-  variants: [
-    { caseName: 'shell', structName: 'BackgroundShellWork', discriminantValue: 'shell' },
-    { caseName: 'subagent', structName: 'BackgroundSubagentWork', discriminantValue: 'subagent' },
-  ],
-};
-
 function generateToolResultContentUnion(): string {
   return `public enum ToolResultContent: Codable, Sendable {
     case text(ToolResultTextContent)
@@ -1001,6 +822,7 @@ function generateToolResultContentUnion(): string {
     case resource(ToolResultResourceContent)
     case fileEdit(ToolResultFileEditContent)
     case terminal(ToolResultTerminalContent)
+    case terminalComplete(ToolResultTerminalCompleteContent)
     case subagent(ToolResultSubagentContent)
     /// Unknown or future tool result content type; the raw payload is preserved
     /// and re-encoded verbatim for forward-compatibility.
@@ -1024,6 +846,8 @@ function generateToolResultContentUnion(): string {
                 self = .fileEdit(try ToolResultFileEditContent(from: decoder))
             case "terminal":
                 self = .terminal(try ToolResultTerminalContent(from: decoder))
+            case "terminalComplete":
+                self = .terminalComplete(try ToolResultTerminalCompleteContent(from: decoder))
             case "subagent":
                 self = .subagent(try ToolResultSubagentContent(from: decoder))
             default:
@@ -1044,6 +868,7 @@ function generateToolResultContentUnion(): string {
         case .resource(let v): try v.encode(to: encoder)
         case .fileEdit(let v): try v.encode(to: encoder)
         case .terminal(let v): try v.encode(to: encoder)
+        case .terminalComplete(let v): try v.encode(to: encoder)
         case .subagent(let v): try v.encode(to: encoder)
         case .unknown(let v): try v.encode(to: encoder)
         }
@@ -1083,57 +908,26 @@ public enum StringOrMarkdown: Codable, Sendable, Equatable {
 }`;
 }
 
-function generateToolInput(): string {
-  return `/// Raw tool input represented inline or by content reference.
-public enum ToolInput: Codable, Sendable {
-    case inline(String)
-    case contentRef(ContentRef)
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let value = try? container.decode(String.self) {
-            self = .inline(value)
-        } else {
-            self = .contentRef(try container.decode(ContentRef.self))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .inline(let value): try container.encode(value)
-        case .contentRef(let value): try container.encode(value)
-        }
-    }
-}`;
-}
-
 function generateSnapshotState(): string {
-  return `/// The state payload of a snapshot.
+  return `/// The state payload of a snapshot — root, session, chat, terminal, changeset, resource-watch, or annotations state.
 public enum SnapshotState: Codable, Sendable {
     case root(RootState)
     case session(SessionState)
     case chat(ChatState)
-    case canvas(CanvasState)
     case terminal(TerminalState)
     case changeset(ChangesetState)
     case resourceWatch(ResourceWatchState)
     case annotations(AnnotationsState)
-    case automations(AutomationState)
-    case automationRun(AutomationRunState)
 
     public init(from decoder: Decoder) throws {
         // Try the most distinctive shapes first. SessionState has required
         // \`lifecycle\` / \`activeClients\` / \`chats\`; ChatState has required
-        // \`turns\`; CanvasState has required instance/provider/type identifiers;
-        // the remaining variants follow, with RootState as the
+        // \`turns\`; the remaining variants follow, with RootState as the
         // catch-all.
         if let session = try? SessionState(from: decoder) {
             self = .session(session)
         } else if let chat = try? ChatState(from: decoder) {
             self = .chat(chat)
-        } else if let canvas = try? CanvasState(from: decoder) {
-            self = .canvas(canvas)
         } else if let terminal = try? TerminalState(from: decoder) {
             self = .terminal(terminal)
         } else if let changeset = try? ChangesetState(from: decoder) {
@@ -1142,10 +936,6 @@ public enum SnapshotState: Codable, Sendable {
             self = .resourceWatch(resourceWatch)
         } else if let annotations = try? AnnotationsState(from: decoder) {
             self = .annotations(annotations)
-        } else if let automations = try? AutomationState(from: decoder) {
-            self = .automations(automations)
-        } else if let automationRun = try? AutomationRunState(from: decoder) {
-            self = .automationRun(automationRun)
         } else {
             self = .root(try RootState(from: decoder))
         }
@@ -1156,13 +946,10 @@ public enum SnapshotState: Codable, Sendable {
         case .root(let state): try state.encode(to: encoder)
         case .session(let state): try state.encode(to: encoder)
         case .chat(let state): try state.encode(to: encoder)
-        case .canvas(let state): try state.encode(to: encoder)
         case .terminal(let state): try state.encode(to: encoder)
         case .changeset(let state): try state.encode(to: encoder)
         case .resourceWatch(let state): try state.encode(to: encoder)
         case .annotations(let state): try state.encode(to: encoder)
-        case .automations(let state): try state.encode(to: encoder)
-        case .automationRun(let state): try state.encode(to: encoder)
         }
     }
 }`;
@@ -1202,24 +989,9 @@ public struct ChatOriginTool: Codable, Sendable {
     }
 }
 
-public struct ChatOriginSideChat: Codable, Sendable {
-    public var kind: ChatOriginKind
-    public var chat: String
-    public var turnId: String
-    public var selection: SideChatSelection?
-
-    public init(kind: ChatOriginKind = .sideChat, chat: String, turnId: String, selection: SideChatSelection? = nil) {
-        self.kind = kind
-        self.chat = chat
-        self.turnId = turnId
-        self.selection = selection
-    }
-}
-
 public enum ChatOrigin: Codable, Sendable {
     case user(ChatOriginUser)
     case fork(ChatOriginFork)
-    case sideChat(ChatOriginSideChat)
     case tool(ChatOriginTool)
 
     private enum DiscriminatorCodingKeys: String, CodingKey { case kind }
@@ -1230,7 +1002,6 @@ public enum ChatOrigin: Codable, Sendable {
         switch discriminant {
         case "user": self = .user(try ChatOriginUser(from: decoder))
         case "fork": self = .fork(try ChatOriginFork(from: decoder))
-        case "sideChat": self = .sideChat(try ChatOriginSideChat(from: decoder))
         case "tool": self = .tool(try ChatOriginTool(from: decoder))
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown ChatOrigin kind: \\(discriminant)")
@@ -1241,64 +1012,11 @@ public enum ChatOrigin: Codable, Sendable {
         switch self {
         case .user(let value): try value.encode(to: encoder)
         case .fork(let value): try value.encode(to: encoder)
-        case .sideChat(let value): try value.encode(to: encoder)
         case .tool(let value): try value.encode(to: encoder)
         }
     }
 }`;
 }
-
-const SESSION_ORIGIN_UNION: UnionConfig = {
-  name: 'SessionOrigin',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'automation', structName: 'AutomationSessionOrigin', discriminantValue: 'automation' },
-  ],
-  injectDiscriminantOnEncode: true,
-};
-
-const AUTOMATION_TRIGGER_UNION: UnionConfig = {
-  name: 'AutomationTrigger',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'schedule', structName: 'AutomationScheduleTrigger', discriminantValue: 'schedule' },
-    { caseName: 'event', structName: 'AutomationEventTrigger', discriminantValue: 'event' },
-  ],
-  injectDiscriminantOnEncode: true,
-};
-
-const AUTOMATION_DISABLE_CONDITION_UNION: UnionConfig = {
-  name: 'AutomationDisableCondition',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'afterRuns', structName: 'AutomationAfterRunsCondition', discriminantValue: 'afterRuns' },
-    { caseName: 'afterDate', structName: 'AutomationAfterDateCondition', discriminantValue: 'afterDate' },
-  ],
-  injectDiscriminantOnEncode: true,
-};
-
-const AUTOMATION_RUN_ORIGIN_UNION: UnionConfig = {
-  name: 'AutomationRunOrigin',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'manual', structName: 'AutomationManualRunOrigin', discriminantValue: 'manual' },
-    { caseName: 'trigger', structName: 'AutomationTriggeredRunOrigin', discriminantValue: 'trigger' },
-  ],
-  injectDiscriminantOnEncode: true,
-};
-
-const AUTOMATION_RUN_LIFECYCLE_UNION: UnionConfig = {
-  name: 'AutomationRunLifecycle',
-  discriminantField: 'status',
-  variants: [
-    { caseName: 'pending', structName: 'AutomationPendingRunLifecycle', discriminantValue: 'pending' },
-    { caseName: 'running', structName: 'AutomationRunningRunLifecycle', discriminantValue: 'running' },
-    { caseName: 'completed', structName: 'AutomationCompletedRunLifecycle', discriminantValue: 'completed' },
-    { caseName: 'failed', structName: 'AutomationFailedRunLifecycle', discriminantValue: 'failed' },
-    { caseName: 'cancelled', structName: 'AutomationCancelledRunLifecycle', discriminantValue: 'cancelled' },
-  ],
-  injectDiscriminantOnEncode: true,
-};
 
 function generateStateFile(project: Project): string {
   const lines: string[] = [GENERATED_HEADER];
@@ -1330,61 +1048,40 @@ function generateStateFile(project: Project): string {
     }
   }
 
-  lines.push('// MARK: - Customization Enablement Union\n');
-  lines.push(generateCustomizationEnablementSwift());
-  lines.push('');
-
-  lines.push('// MARK: - Tool Input\n');
-  lines.push(generateToolInput());
-  lines.push('');
-
   lines.push('// MARK: - Discriminated Unions\n');
   lines.push(generateChatOriginSwift());
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, RESPONSE_PART_UNION));
+  lines.push(generateDiscriminatedUnion(RESPONSE_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONFIRMATION_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONFIRMATION_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CLAIM_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CLAIM_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CONTENT_PART_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CONTENT_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_QUESTION_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_QUESTION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_ANSWER_VALUE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_ANSWER_VALUE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_ANSWER_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_ANSWER_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MESSAGE_ATTACHMENT_UNION));
+  lines.push(generateDiscriminatedUnion(MESSAGE_ATTACHMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHILD_CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CHILD_CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_LOAD_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_LOAD_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MCP_SERVER_STATUS_UNION));
+  lines.push(generateDiscriminatedUnion(MCP_SERVER_STATUS_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONTRIBUTOR_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONTRIBUTOR_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_RISK_ASSESSMENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_RISK_ASSESSMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_LIFECYCLE_STATE_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_REQUEST_UNION));
-  lines.push(generateDiscriminatedUnion(project, BACKGROUND_WORK_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_TRIGGER_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_DISABLE_CONDITION_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_LIFECYCLE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_REQUEST_UNION));
   lines.push('');
   lines.push(generateToolResultContentUnion());
   lines.push('');
@@ -1405,7 +1102,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/chatAdded', caseName: 'sessionChatAdded', tsInterface: 'SessionChatAddedAction' },
   { type: 'session/chatRemoved', caseName: 'sessionChatRemoved', tsInterface: 'SessionChatRemovedAction' },
   { type: 'session/chatUpdated', caseName: 'sessionChatUpdated', tsInterface: 'SessionChatUpdatedAction' },
-  { type: 'session/chatsReordered', caseName: 'sessionChatsReordered', tsInterface: 'SessionChatsReorderedAction' },
   { type: 'session/defaultChatChanged', caseName: 'sessionDefaultChatChanged', tsInterface: 'SessionDefaultChatChangedAction' },
   { type: 'chat/turnStarted', caseName: 'chatTurnStarted', tsInterface: 'ChatTurnStartedAction' },
   { type: 'chat/delta', caseName: 'chatDelta', tsInterface: 'ChatDeltaAction' },
@@ -1422,14 +1118,7 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'chat/turnComplete', caseName: 'chatTurnComplete', tsInterface: 'ChatTurnCompleteAction' },
   { type: 'chat/turnCancelled', caseName: 'chatTurnCancelled', tsInterface: 'ChatTurnCancelledAction' },
   { type: 'chat/error', caseName: 'chatError', tsInterface: 'ChatErrorAction' },
-  { type: 'chat/turnResume', caseName: 'chatTurnResume', tsInterface: 'ChatTurnResumeAction' },
   { type: 'chat/activityChanged', caseName: 'chatActivityChanged', tsInterface: 'ChatActivityChangedAction' },
-  { type: 'chat/backgroundWorkSet', caseName: 'chatBackgroundWorkSet', tsInterface: 'ChatBackgroundWorkSetAction' },
-  { type: 'chat/backgroundWorkRemoved', caseName: 'chatBackgroundWorkRemoved', tsInterface: 'ChatBackgroundWorkRemovedAction' },
-  { type: 'chat/movableChanged', caseName: 'chatMovableChanged', tsInterface: 'ChatMovableChangedAction' },
-  { type: 'chat/changesetsChanged', caseName: 'chatChangesetsChanged', tsInterface: 'ChatChangesetsChangedAction' },
-  { type: 'chat/canvasesChanged', caseName: 'chatCanvasesChanged', tsInterface: 'ChatCanvasesChangedAction' },
-  { type: 'canvas/stateChanged', caseName: 'canvasStateChanged', tsInterface: 'CanvasStateChangedAction' },
   { type: 'session/titleChanged', caseName: 'sessionTitleChanged', tsInterface: 'SessionTitleChangedAction' },
   { type: 'chat/usage', caseName: 'chatUsage', tsInterface: 'ChatUsageAction' },
   { type: 'chat/reasoning', caseName: 'chatReasoning', tsInterface: 'ChatReasoningAction' },
@@ -1442,7 +1131,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/activeClientRemoved', caseName: 'sessionActiveClientRemoved', tsInterface: 'SessionActiveClientRemovedAction' },
   { type: 'session/workingDirectorySet', caseName: 'sessionWorkingDirectorySet', tsInterface: 'SessionWorkingDirectorySetAction' },
   { type: 'session/workingDirectoryRemoved', caseName: 'sessionWorkingDirectoryRemoved', tsInterface: 'SessionWorkingDirectoryRemovedAction' },
-  { type: 'session/workingDirectoryReplaced', caseName: 'sessionWorkingDirectoryReplaced', tsInterface: 'SessionWorkingDirectoryReplacedAction' },
   { type: 'chat/workingDirectorySet', caseName: 'chatWorkingDirectorySet', tsInterface: 'ChatWorkingDirectorySetAction' },
   { type: 'chat/workingDirectoryRemoved', caseName: 'chatWorkingDirectoryRemoved', tsInterface: 'ChatWorkingDirectoryRemovedAction' },
   { type: 'session/inputNeededSet', caseName: 'sessionInputNeededSet', tsInterface: 'SessionInputNeededSetAction' },
@@ -1451,8 +1139,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'chat/pendingMessageRemoved', caseName: 'chatPendingMessageRemoved', tsInterface: 'ChatPendingMessageRemovedAction' },
   { type: 'chat/queuedMessagesReordered', caseName: 'chatQueuedMessagesReordered', tsInterface: 'ChatQueuedMessagesReorderedAction' },
   { type: 'chat/draftChanged', caseName: 'chatDraftChanged', tsInterface: 'ChatDraftChangedAction' },
-  { type: 'chat/isReadChanged', caseName: 'chatIsReadChanged', tsInterface: 'ChatIsReadChangedAction' },
-  { type: 'chat/isArchivedChanged', caseName: 'chatIsArchivedChanged', tsInterface: 'ChatIsArchivedChangedAction' },
   { type: 'chat/inputRequested', caseName: 'chatInputRequested', tsInterface: 'ChatInputRequestedAction' },
   { type: 'chat/inputAnswerChanged', caseName: 'chatInputAnswerChanged', tsInterface: 'ChatInputAnswerChangedAction' },
   { type: 'chat/inputCompleted', caseName: 'chatInputCompleted', tsInterface: 'ChatInputCompletedAction' },
@@ -1463,7 +1149,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/mcpServerStateChanged', caseName: 'sessionMcpServerStateChanged', tsInterface: 'SessionMcpServerStateChangedAction' },
   { type: 'session/mcpServerStartRequested', caseName: 'sessionMcpServerStartRequested', tsInterface: 'SessionMcpServerStartRequestedAction' },
   { type: 'session/mcpServerStopRequested', caseName: 'sessionMcpServerStopRequested', tsInterface: 'SessionMcpServerStopRequestedAction' },
-  { type: 'session/mcpServerBackgroundRequested', caseName: 'sessionMcpServerBackgroundRequested', tsInterface: 'SessionMcpServerBackgroundRequestedAction' },
   { type: 'chat/truncated', caseName: 'chatTruncated', tsInterface: 'ChatTruncatedAction' },
   { type: 'chat/turnsLoaded', caseName: 'chatTurnsLoaded', tsInterface: 'ChatTurnsLoadedAction' },
   { type: 'session/configChanged', caseName: 'sessionConfigChanged', tsInterface: 'SessionConfigChangedAction' },
@@ -1495,15 +1180,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'terminal/commandExecuted', caseName: 'terminalCommandExecuted', tsInterface: 'TerminalCommandExecutedAction' },
   { type: 'terminal/commandFinished', caseName: 'terminalCommandFinished', tsInterface: 'TerminalCommandFinishedAction' },
   { type: 'resourceWatch/changed', caseName: 'resourceWatchChanged', tsInterface: 'ResourceWatchChangedAction' },
-  { type: 'automation/createRequested', caseName: 'automationCreateRequested', tsInterface: 'AutomationCreateRequestedAction' },
-  { type: 'automation/updateRequested', caseName: 'automationUpdateRequested', tsInterface: 'AutomationUpdateRequestedAction' },
-  { type: 'automation/set', caseName: 'automationSet', tsInterface: 'AutomationSetAction' },
-  { type: 'automation/removed', caseName: 'automationRemoved', tsInterface: 'AutomationRemovedAction' },
-  { type: 'automationRun/lifecycleChanged', caseName: 'automationRunLifecycleChanged', tsInterface: 'AutomationRunLifecycleChangedAction' },
-  { type: 'automationRun/sessionSet', caseName: 'automationRunSessionSet', tsInterface: 'AutomationRunSessionSetAction' },
-  { type: 'automationRun/sessionRemoved', caseName: 'automationRunSessionRemoved', tsInterface: 'AutomationRunSessionRemovedAction' },
-  { type: 'automationRun/primarySessionChanged', caseName: 'automationRunPrimarySessionChanged', tsInterface: 'AutomationRunPrimarySessionChangedAction' },
-  { type: 'automationRun/cancelRequested', caseName: 'automationRunCancelRequested', tsInterface: 'AutomationRunCancelRequestedAction' },
 ];
 
 /** Merged struct for the approved/denied tool call confirmed action */
@@ -1670,20 +1346,14 @@ function generateActionsFile(project: Project): string {
 
 // ─── Commands File Generator ─────────────────────────────────────────────────
 
-const COMMAND_ENUMS = ['ReconnectResultType', 'ChatSourceKind', 'ChatMoveDestinationKind', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
+const COMMAND_ENUMS = ['ReconnectResultType', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
 
 const COMMAND_STRUCTS = [
-  'InitializeParams', 'InitializeResult', 'ClientCapabilities', 'AutomationCapabilities',
-  'AutomationCreateCapability',
-  'AutomationScheduleCapabilities',
-  'AutomationRunCancellationCapability',
-  'AutomationCustomizationsCapability',
-  'Implementation',
+  'InitializeParams', 'InitializeResult', 'ClientCapabilities', 'Implementation',
   'ReconnectParams', 'ReconnectReplayResult', 'ReconnectSnapshotResult',
   'SubscribeParams', 'SubscribeView', 'SubscriptionDeliveryOptions', 'SubscribeResult',
-  'CreateSessionParams', 'DisposeSessionParams',
-  'CreateChatParams', 'DisposeChatParams',
-  'ChatMoveToSessionDestination', 'ChatMoveToNewSessionDestination', 'MoveChatParams', 'MoveChatResult',
+  'SessionForkSource', 'CreateSessionParams', 'DisposeSessionParams',
+  'ChatForkSource', 'CreateChatParams', 'DisposeChatParams',
   'ListSessionsParams', 'ListSessionsResult',
   'ResourceReadParams', 'ResourceReadResult',
   'ResourceWriteParams', 'ResourceWriteResult',
@@ -1706,9 +1376,6 @@ const COMMAND_STRUCTS = [
   'CompletionsParams', 'CompletionItem', 'CompletionsResult',
   'InvokeChangesetOperationParams', 'InvokeChangesetOperationResult',
   'ChangesetOperationFollowUp',
-  'ListAutomationTriggerDefinitionsParams', 'ListAutomationTriggerDefinitionsResult',
-  'RunAutomationParams', 'RunAutomationResult',
-  'FetchAutomationRunsParams', 'FetchAutomationRunsResult',
 ];
 
 const RECONNECT_RESULT_UNION: UnionConfig = {
@@ -1717,24 +1384,6 @@ const RECONNECT_RESULT_UNION: UnionConfig = {
   variants: [
     { caseName: 'replay', structName: 'ReconnectReplayResult', discriminantValue: 'replay' },
     { caseName: 'snapshot', structName: 'ReconnectSnapshotResult', discriminantValue: 'snapshot' },
-  ],
-};
-
-const CHAT_SOURCE_UNION: UnionConfig = {
-  name: 'ChatSource',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'fork', structName: 'ForkChatSource', discriminantValue: 'fork' },
-    { caseName: 'sideChat', structName: 'SideChatSource', discriminantValue: 'sideChat' },
-  ],
-};
-
-const CHAT_MOVE_DESTINATION_UNION: UnionConfig = {
-  name: 'ChatMoveDestination',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'session', structName: 'ChatMoveToSessionDestination', discriminantValue: 'session' },
-    { caseName: 'newSession', structName: 'ChatMoveToNewSessionDestination', discriminantValue: 'newSession' },
   ],
 };
 
@@ -1751,20 +1400,6 @@ function generateCommandsFile(project: Project): string {
   }
 
   lines.push('// MARK: - Command Types\n');
-  lines.push(generateFixedChatSourceBranchSwift(
-    'ForkChatSource',
-    'fork',
-    'Copies source history through a completed turn into the new chat.',
-    'Completed turn identifier in the source chat.\n\nContent through this turn is copied into the new chat\'s visible `turns`.',
-  ));
-  lines.push('');
-  lines.push(generateFixedChatSourceBranchSwift(
-    'SideChatSource',
-    'sideChat',
-    'Supplies source context to a new side chat without copying it into the side\nchat\'s visible history.',
-    'Stable source-turn identifier in the source chat.\n\nHosts resolve this id against the source chat\'s current `activeTurn` or its\nretained `turns` when accepting `createChat`. If it names the current\nactive turn, the host snapshots the source chat\'s retained history plus\nthat turn\'s current user message and any partial assistant response already\navailable. Once that turn later becomes historical, it is still referenced\nby this same identifier.',
-  ));
-  lines.push('');
   // Track which interfaces we've already generated to handle duplicates
   const generated = new Set<string>();
   for (const ifaceName of COMMAND_STRUCTS) {
@@ -1779,13 +1414,8 @@ function generateCommandsFile(project: Project): string {
     }
   }
 
-  lines.push('// MARK: - Command Unions\n');
-  lines.push(generateDiscriminatedUnion(project, CHAT_SOURCE_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_MOVE_DESTINATION_UNION));
-  lines.push('');
   lines.push('// MARK: - ReconnectResult Union\n');
-  lines.push(generateDiscriminatedUnion(project, RECONNECT_RESULT_UNION));
+  lines.push(generateDiscriminatedUnion(RECONNECT_RESULT_UNION));
   lines.push('');
 
   lines.push('// MARK: - Changeset Operation Unions\n');
@@ -1793,70 +1423,6 @@ function generateCommandsFile(project: Project): string {
   lines.push('');
 
   return lines.join('\n');
-}
-
-function generateCustomizationEnablementSwift(): string {
-  return `/// A single explicit customization enablement decision.
-public enum CustomizationEnablement: Codable, Sendable {
-    case global(CustomizationEnablementGlobal)
-    case workspace(CustomizationEnablementWorkspace)
-    case session(CustomizationEnablementSession)
-
-    private enum DiscriminantKey: String, CodingKey {
-        case kind
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: DiscriminantKey.self)
-        switch try container.decode(String.self, forKey: .kind) {
-        case "global":
-            self = .global(try CustomizationEnablementGlobal(from: decoder))
-        case "workspace":
-            self = .workspace(try CustomizationEnablementWorkspace(from: decoder))
-        case "session":
-            self = .session(try CustomizationEnablementSession(from: decoder))
-        default:
-            throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown CustomizationEnablement kind")
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        switch self {
-        case .global(let value): try value.encode(to: encoder)
-        case .workspace(let value): try value.encode(to: encoder)
-        case .session(let value): try value.encode(to: encoder)
-        }
-    }
-}
-
-public struct CustomizationEnablementGlobal: Codable, Sendable {
-    public var kind: String = "global"
-    public var enabled: Bool
-
-    public init(enabled: Bool) {
-        self.enabled = enabled
-    }
-}
-
-public struct CustomizationEnablementWorkspace: Codable, Sendable {
-    public var kind: String = "workspace"
-    public var uri: URI
-    public var enabled: Bool
-
-    public init(uri: URI, enabled: Bool) {
-        self.uri = uri
-        self.enabled = enabled
-    }
-}
-
-public struct CustomizationEnablementSession: Codable, Sendable {
-    public var kind: String = "session"
-    public var enabled: Bool
-
-    public init(enabled: Bool) {
-        self.enabled = enabled
-    }
-}`;
 }
 
 function generateChangesetOperationTargetSwift(): string {
@@ -1948,8 +1514,7 @@ public struct ChangesetOperationRangeTarget: Codable, Sendable {
 const NOTIFICATION_ENUMS = ['AuthRequiredReason'];
 
 const NOTIFICATION_STRUCTS = [
-  'SessionAddedParams', 'SessionRemovedParams', 'SessionSummaryChangedParams',
-  'ProgressParams', 'AuthRequiredParams',
+  'SessionAddedParams', 'SessionRemovedParams', 'SessionSummaryChangedParams', 'ProgressParams', 'AuthRequiredParams',
   'OtlpExportLogsParams', 'OtlpExportTracesParams', 'OtlpExportMetricsParams',
 ];
 
@@ -2030,7 +1595,8 @@ function generateErrorsFile(project: Project): string {
   lines.push('    public static let turnInProgress = -32004');
   lines.push('    /// The server cannot speak any of the protocol versions offered by the client in `InitializeParams.protocolVersions`');
   lines.push('    public static let unsupportedProtocolVersion = -32005');
-  lines.push('    // -32006 is intentionally reserved and unassigned.');
+  lines.push('    /// The requested content URI does not exist');
+  lines.push('    public static let contentNotFound = -32006');
   lines.push('    /// Authentication required for a protected resource');
   lines.push('    public static let authRequired = -32007');
   lines.push('    /// The requested file, folder, or URI does not exist');
@@ -2393,7 +1959,6 @@ function checkExhaustiveness(project: Project): void {
     'PaginatedParams',               // base interface; flattened into each paginated command params struct
     'PaginatedResult',               // base interface; flattened into each paginated command result struct
     'StringOrMarkdown',              // generateStringOrMarkdown()
-    'ToolInput',                     // generateToolInput()
     'ToolCallState',                // TOOL_CALL_STATE_UNION discriminated union
     'StateAction',                  // StateAction enum in generateActionsFile()
     'ActionEnvelope',               // generateStructFromInterface() call in generateActionsFile()
@@ -2410,8 +1975,6 @@ function checkExhaustiveness(project: Project): void {
     'ChatInputAnswerValue',      // SESSION_INPUT_ANSWER_VALUE_UNION discriminated union
     'ChatInputAnswer',           // CHAT_INPUT_ANSWER_UNION discriminated union
     'ChatOrigin',                // hand-generated union for inline variants
-    'ChatSource',                // CHAT_SOURCE_UNION discriminated union
-    'ChatMoveDestination',       // CHAT_MOVE_DESTINATION_UNION discriminated union
     'ChatToolCallApprovedAction',
     'ChatToolCallDeniedAction',
     'ChatToolCallConfirmedAction',
@@ -2426,9 +1989,7 @@ function checkExhaustiveness(project: Project): void {
     'McpServerState',              // MCP_SERVER_STATUS_UNION discriminated union
     'ToolCallContributor',          // TOOL_CALL_CONTRIBUTOR_UNION discriminated union
     'ToolCallRiskAssessment',       // TOOL_CALL_RISK_ASSESSMENT_UNION discriminated union
-    'TerminalLifecycleState',       // TERMINAL_LIFECYCLE_STATE_UNION discriminated union
     'SessionInputRequest',          // SESSION_INPUT_REQUEST_UNION discriminated union
-    'BackgroundWork',               // BACKGROUND_WORK_UNION discriminated union
     'ToolCallConfirmationState',    // TOOL_CALL_CONFIRMATION_STATE_UNION discriminated union
     'AuthRequiredErrorData',        // emitted by generateErrorsFile()
     'PermissionDeniedErrorData',    // emitted by generateErrorsFile()
@@ -2439,15 +2000,7 @@ function checkExhaustiveness(project: Project): void {
     'AhpErrorCodeWithData',         // type-level alias; not a Swift type
     'JsonRpcErrorCode',             // type-level alias over JsonRpcErrorCodes const enum
     'ReconnectResult',              // RECONNECT_RESULT_UNION discriminated union
-    'SessionOrigin',                // SESSION_ORIGIN_UNION discriminated union
-    'AutomationTrigger',            // AUTOMATION_TRIGGER_UNION discriminated union
-    'AutomationDisableCondition', // AUTOMATION_DISABLE_CONDITION_UNION discriminated union
-    'AutomationRunOrigin',          // AUTOMATION_RUN_ORIGIN_UNION discriminated union
-    'AutomationRunLifecycle',       // AUTOMATION_RUN_LIFECYCLE_UNION discriminated union
-    'ForkChatSource',               // generateFixedChatSourceBranchSwift()
-    'SideChatSource',               // generateFixedChatSourceBranchSwift()
     'ChangesetOperationTarget',     // TS discriminated union; consumers should add a Swift case-iterable enum
-    'CustomizationEnablement',      // generateCustomizationEnablementSwift()
   ]);
 
   const missing = [...imported].filter(n => !coveredByLists.has(n) && !knownSpecial.has(n));
@@ -2477,7 +2030,7 @@ function generateVersionFile(project: Project): string {
     '/// Current protocol version (SemVer `MAJOR.MINOR.PATCH`).\n' +
     `public let PROTOCOL_VERSION: String = ${JSON.stringify(current)}\n\n` +
     '/// Every protocol version this package is willing to negotiate,\n' +
-    '/// ordered most-preferred-first, independently of the development\n' +
+    '/// ordered most-preferred-first. The first entry equals\n' +
     '/// ``PROTOCOL_VERSION``.\n' +
     '///\n' +
     '/// Pass this list (or a derived `[String]`) as `protocolVersions` on\n' +
@@ -2485,45 +2038,7 @@ function generateVersionFile(project: Project): string {
     "/// protocol versions if the host doesn't accept the newest one.\n" +
     'public let SUPPORTED_PROTOCOL_VERSIONS: [String] = [\n' +
     items +
-    '\n]\n' +
-    `
-/// Select the highest offered version in a supported caret range.
-/// Nil means the host must send UnsupportedProtocolVersion and close.
-/// Malformed versions throw.
-public func negotiateProtocolVersion(_ offered: [String]) throws -> String? {
-    func parse(_ version: String) throws -> [UInt64] {
-        let parts = version.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 3 else {
-            throw NSError(domain: "AgentHostProtocol.InvalidProtocolVersion", code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Invalid protocol version: \\(version)"])
-        }
-        return try parts.map { part in
-            guard !part.isEmpty, !(part.count > 1 && part.first == "0"),
-                part.utf8.allSatisfy({ $0 >= 48 && $0 <= 57 }),
-                let value = UInt64(part) else {
-                throw NSError(domain: "AgentHostProtocol.InvalidProtocolVersion", code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Invalid protocol version: \\(version)"])
-            }
-            return value
-        }
-    }
-    let baselines = try SUPPORTED_PROTOCOL_VERSIONS.map(parse)
-    var selected: String?
-    var previous: [UInt64]?
-    for version in offered {
-        let parts = try parse(version)
-        if baselines.contains(where: { base in
-            parts[0] == base[0] && (parts[0] > 0 || parts[1] == base[1]) &&
-                (parts[0] > 0 || parts[1] > 0 || parts[2] == base[2]) &&
-                !parts.lexicographicallyPrecedes(base)
-        }) && (previous.map { $0.lexicographicallyPrecedes(parts) } ?? true) {
-            selected = version
-            previous = parts
-        }
-    }
-    return selected
-}
-`
+    '\n]\n'
   );
 }
 

@@ -35,10 +35,6 @@ import fs from 'fs';
 import path from 'path';
 import { findProtocolSourceFiles } from './find-protocol-sources.js';
 import { readProtocolVersions } from './read-protocol-versions.js';
-import {
-  discriminatedUnionAllowsUnknown,
-  getEnumCompatibility,
-} from './enum-compatibility.js';
 
 const GENERATED_HEADER =
   '// Generated from types/*.ts — do not edit\n\n' +
@@ -58,7 +54,6 @@ const GENERATED_HEADER =
   'import kotlinx.serialization.json.JsonObject\n' +
   'import kotlinx.serialization.json.JsonPrimitive\n' +
   'import kotlinx.serialization.json.buildJsonObject\n' +
-  'import kotlinx.serialization.json.jsonObject\n' +
   'import kotlinx.serialization.json.contentOrNull\n';
 
 const PACKAGE = 'com.microsoft.agenthostprotocol.generated';
@@ -91,7 +86,7 @@ function snakeToCamel(s: string): string {
 const KOTLIN_RESERVED_KEYWORDS = new Set([
   // Hard keywords
   'as', 'break', 'class', 'continue', 'do', 'else', 'false', 'for', 'fun',
-  'if', 'import', 'in', 'interface', 'is', 'null', 'object', 'package', 'return',
+  'if', 'in', 'interface', 'is', 'null', 'object', 'package', 'return',
   'super', 'this', 'throw', 'true', 'try', 'typealias', 'typeof', 'val',
   'var', 'when', 'while',
 ]);
@@ -141,7 +136,6 @@ function mapType(tsType: string): string {
   // Type aliases
   if (tsType === 'URI') return 'String';
   if (tsType === 'StringOrMarkdown') return 'StringOrMarkdown';
-  if (tsType === 'ToolInput') return 'ToolInput';
   // ChildCustomizationType is a TS-only subset alias of CustomizationType.
   if (tsType === 'ChildCustomizationType') return 'CustomizationType';
 
@@ -153,8 +147,6 @@ function mapType(tsType: string): string {
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | AnnotationsState' ||
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState' ||
     tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState' ||
-    tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | AutomationState | AutomationRunState' ||
-    tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | CanvasState | AutomationState | AutomationRunState' ||
     tsType === 'RootState | SessionState | ChatState' ||
     tsType === 'RootState | SessionState | ChatState | TerminalState' ||
     tsType === 'RootState | SessionState | ChatState | TerminalState | ChangesetState' ||
@@ -355,7 +347,6 @@ function generateKotlinEnum(enumDecl: EnumDeclaration): string {
   const desc = enumDecl.getJsDocs()[0]?.getDescription().trim();
   const values = enumDecl.getMembers().map(m => m.getValue());
   const isNumeric = values.every(v => typeof v === 'number');
-  const isNonexhaustive = getEnumCompatibility(enumDecl) === 'nonexhaustive';
 
   // Bitset enums (JSDoc convention "Bitset of …") → `value class` so OR'd
   // combinations with unknown bits decode/encode losslessly.
@@ -410,38 +401,6 @@ function generateKotlinEnum(enumDecl: EnumDeclaration): string {
     lines.push('    }');
     lines.push(`    override fun deserialize(decoder: Decoder): ${name} =`);
     lines.push(`        ${name}(decoder.decodeLong().toUInt())`);
-    lines.push('}');
-    return lines.join('\n');
-  }
-
-  if (isNonexhaustive) {
-    const rawType = isNumeric ? 'Long' : 'String';
-    const primitiveKind = isNumeric ? 'PrimitiveKind.LONG' : 'PrimitiveKind.STRING';
-    const encode = isNumeric ? 'encoder.encodeLong(value.rawValue)' : 'encoder.encodeString(value.rawValue)';
-    const decode = isNumeric ? 'decoder.decodeLong()' : 'decoder.decodeString()';
-    lines.push(`@Serializable(with = ${name}Serializer::class)`);
-    lines.push('@JvmInline');
-    lines.push(`value class ${name}(val rawValue: ${rawType}) {`);
-    lines.push('    companion object {');
-    for (const member of enumDecl.getMembers()) {
-      const memberName = toScreamingSnake(member.getName());
-      const memberDoc = member.getJsDocs()[0]?.getDescription().trim();
-      if (memberDoc) {
-        lines.push(...emitKDoc(memberDoc, '        '));
-      }
-      lines.push(`        val ${memberName}: ${name} = ${name}(${JSON.stringify(member.getValue())})`);
-    }
-    lines.push('    }');
-    lines.push('}');
-    lines.push('');
-    lines.push(`internal object ${name}Serializer : KSerializer<${name}> {`);
-    lines.push(`    override val descriptor: SerialDescriptor =`);
-    lines.push(`        PrimitiveSerialDescriptor("${name}", ${primitiveKind})`);
-    lines.push(`    override fun serialize(encoder: Encoder, value: ${name}) {`);
-    lines.push(`        ${encode}`);
-    lines.push('    }');
-    lines.push(`    override fun deserialize(decoder: Decoder): ${name} =`);
-    lines.push(`        ${name}(${decode})`);
     lines.push('}');
     return lines.join('\n');
   }
@@ -523,10 +482,6 @@ interface UnionConfig {
    * on the same set of state-channel unions.
    */
   unknown?: boolean;
-  /** Discriminator enum when a generated wrapper lacks the field itself. */
-  discriminatorEnum?: string;
-  /** Force the sealed case's discriminator when serializing its payload. */
-  injectDiscriminantOnSerialize?: boolean;
 }
 
 /**
@@ -540,14 +495,7 @@ interface UnionConfig {
  * `structName` for the sealed-interface declaration but preserve every entry
  * in the deserializer switch.
  */
-function generateDiscriminatedUnion(project: Project, config: UnionConfig): string {
-  const unknown = discriminatedUnionAllowsUnknown(
-    project,
-    config.discriminantField,
-    config.variants.map(variant => variant.structName),
-    config.unknown,
-    config.discriminatorEnum,
-  );
+function generateDiscriminatedUnion(config: UnionConfig): string {
   const lines: string[] = [];
 
   lines.push(`@Serializable(with = ${config.name}Serializer::class)`);
@@ -565,7 +513,7 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
     lines.push(`@JvmInline`);
     lines.push(`value class ${config.name}${v.caseName}(val value: ${v.structName}) : ${config.name}`);
   }
-  if (unknown) {
+  if (config.unknown) {
     lines.push(`/**`);
     lines.push(` * Forward-compat catch-all for unknown ${config.name} discriminators.`);
     lines.push(' *');
@@ -591,7 +539,7 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
   lines.push('        val obj = element as? JsonObject');
   lines.push(`            ?: error("Expected JsonObject for ${config.name}")`);
   lines.push(`        val discriminant = (obj[${JSON.stringify(config.discriminantField)}] as? JsonPrimitive)?.content`);
-  if (unknown) {
+  if (config.unknown) {
     lines.push(`            ?: return ${config.name}Unknown(obj)`);
   } else {
     lines.push(`            ?: error("Missing ${config.discriminantField} discriminator on ${config.name}")`);
@@ -601,7 +549,7 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
     const variantClass = `${config.name}${(byStruct.get(v.structName) ?? v).caseName}`;
     lines.push(`            ${JSON.stringify(v.discriminantValue)} -> ${variantClass}(input.json.decodeFromJsonElement(${v.structName}.serializer(), element))`);
   }
-  if (unknown) {
+  if (config.unknown) {
     lines.push(`            else -> ${config.name}Unknown(obj)`);
   } else {
     lines.push(`            else -> error("Unknown ${config.name} discriminator: $discriminant")`);
@@ -617,25 +565,11 @@ function generateDiscriminatedUnion(project: Project, config: UnionConfig): stri
     const variantClass = `${config.name}${v.caseName}`;
     lines.push(`            is ${variantClass} -> output.json.encodeToJsonElement(${v.structName}.serializer(), value.value)`);
   }
-  if (unknown) {
+  if (config.unknown) {
     lines.push(`            is ${config.name}Unknown -> value.raw`);
   }
   lines.push('        }');
-  if (config.injectDiscriminantOnSerialize) {
-    lines.push('        val encodedObject = element.jsonObject.toMutableMap()');
-    lines.push('        val discriminant = when (value) {');
-    for (const v of byStruct.values()) {
-      lines.push(`            is ${config.name}${v.caseName} -> ${JSON.stringify(v.discriminantValue)}`);
-    }
-    if (unknown) {
-      lines.push(`            is ${config.name}Unknown -> null`);
-    }
-    lines.push('        }');
-    lines.push(`        if (discriminant != null) encodedObject[${JSON.stringify(config.discriminantField)}] = JsonPrimitive(discriminant)`);
-    lines.push('        output.encodeJsonElement(JsonObject(encodedObject))');
-  } else {
-    lines.push('        output.encodeJsonElement(element)');
-  }
+  lines.push('        output.encodeJsonElement(element)');
   lines.push('    }');
   lines.push('}');
 
@@ -654,72 +588,6 @@ function generateDataClassFromInterface(
   const name = ktNameOverride ?? tsInterfaceName;
   const props = extractProps(iface, project);
   return generateKotlinDataClass(name, props);
-}
-
-function generateFixedChatSourceBranchKotlin(
-  name: 'ForkChatSource' | 'SideChatSource',
-  kindMember: 'FORK' | 'SIDE_CHAT',
-  kindWire: 'fork' | 'sideChat',
-  doc: string,
-  turnIdDoc: string,
-): string {
-  const sideChatSelectionProps = name === 'SideChatSource'
-    ? `${emitKDoc('Optional immutable selected-text snapshot to carry into the created side\nchat\'s origin.', '    ').join('\n')}
-    val selection: SideChatSelection? = null,
-`
-    : '';
-  const sideChatSelectionWireProps = name === 'SideChatSource'
-    ? '    val selection: SideChatSelection? = null,\n'
-    : '';
-  const sideChatSelectionDecodeArg = name === 'SideChatSource'
-    ? ', selection = wire.selection'
-    : '';
-  const sideChatSelectionEncodeArg = name === 'SideChatSource'
-    ? ', selection = value.selection'
-    : '';
-  return `${emitKDoc(doc).join('\n')}
-@Serializable(with = ${name}Serializer::class)
-data class ${name}(
-${emitKDoc('URI of the existing source chat.', '    ').join('\n')}
-    val chat: URI,
-${emitKDoc(turnIdDoc, '    ').join('\n')}
-    val turnId: String,
-${sideChatSelectionProps}
-) {
-    val kind: ChatSourceKind
-        get() = ChatSourceKind.${kindMember}
-}
-
-@Serializable
-private data class ${name}Wire(
-    val kind: ChatSourceKind,
-    val chat: URI,
-    val turnId: String,
-${sideChatSelectionWireProps})
-
-internal object ${name}Serializer : KSerializer<${name}> {
-    override val descriptor: SerialDescriptor = ${name}Wire.serializer().descriptor
-
-    override fun deserialize(decoder: Decoder): ${name} {
-        val input = decoder as? JsonDecoder
-            ?: error("${name} can only be deserialized from JSON")
-        val wire = input.json.decodeFromJsonElement(${name}Wire.serializer(), input.decodeJsonElement())
-        if (wire.kind != ChatSourceKind.${kindMember}) {
-            error("Expected ${name} kind ${kindWire}")
-        }
-        return ${name}(chat = wire.chat, turnId = wire.turnId${sideChatSelectionDecodeArg})
-    }
-
-    override fun serialize(encoder: Encoder, value: ${name}) {
-        val output = encoder as? JsonEncoder
-            ?: error("${name} can only be serialized to JSON")
-        val element = output.json.encodeToJsonElement(
-            ${name}Wire.serializer(),
-            ${name}Wire(kind = ChatSourceKind.${kindMember}, chat = value.chat, turnId = value.turnId${sideChatSelectionEncodeArg}),
-        )
-        output.encodeJsonElement(element)
-    }
-}`;
 }
 
 /**
@@ -789,63 +657,20 @@ internal object StringOrMarkdownSerializer : KSerializer<StringOrMarkdown> {
 }`;
 }
 
-function generateToolInput(): string {
-  return `/**
- * Raw tool input represented inline or by content reference.
- */
-@Serializable(with = ToolInputSerializer::class)
-sealed interface ToolInput {
-    @JvmInline value class Inline(val value: String) : ToolInput
-    @JvmInline value class ContentReference(val value: ContentRef) : ToolInput
-}
-
-internal object ToolInputSerializer : KSerializer<ToolInput> {
-    override val descriptor: SerialDescriptor =
-        buildClassSerialDescriptor("ToolInput")
-
-    override fun deserialize(decoder: Decoder): ToolInput {
-        val input = decoder as? JsonDecoder
-            ?: error("ToolInput can only be deserialized from JSON")
-        return when (val element = input.decodeJsonElement()) {
-            is JsonPrimitive -> ToolInput.Inline(
-                element.contentOrNull ?: error("ToolInput string must not be null"),
-            )
-            is JsonObject -> ToolInput.ContentReference(
-                input.json.decodeFromJsonElement(ContentRef.serializer(), element),
-            )
-            else -> error("ToolInput must be a string or ContentRef object")
-        }
-    }
-
-    override fun serialize(encoder: Encoder, value: ToolInput) {
-        val output = encoder as? JsonEncoder
-            ?: error("ToolInput can only be serialized to JSON")
-        val element = when (value) {
-            is ToolInput.Inline -> JsonPrimitive(value.value)
-            is ToolInput.ContentReference ->
-                output.json.encodeToJsonElement(ContentRef.serializer(), value.value)
-        }
-        output.encodeJsonElement(element)
-    }
-}`;
-}
-
 function generateSnapshotState(): string {
   return `/**
- * The state payload of a snapshot.
+ * The state payload of a snapshot — root, session, chat, terminal, changeset,
+ * resource-watch, or annotations state.
  */
 @Serializable(with = SnapshotStateSerializer::class)
 sealed interface SnapshotState {
     @JvmInline value class Root(val value: RootState) : SnapshotState
     @JvmInline value class Session(val value: SessionState) : SnapshotState
     @JvmInline value class Chat(val value: ChatState) : SnapshotState
-    @JvmInline value class Canvas(val value: CanvasState) : SnapshotState
     @JvmInline value class Terminal(val value: TerminalState) : SnapshotState
     @JvmInline value class Changeset(val value: ChangesetState) : SnapshotState
     @JvmInline value class ResourceWatch(val value: ResourceWatchState) : SnapshotState
     @JvmInline value class Annotations(val value: AnnotationsState) : SnapshotState
-    @JvmInline value class Automations(val value: AutomationState) : SnapshotState
-    @JvmInline value class AutomationRun(val value: AutomationRunState) : SnapshotState
 }
 
 internal object SnapshotStateSerializer : KSerializer<SnapshotState> {
@@ -858,9 +683,7 @@ internal object SnapshotStateSerializer : KSerializer<SnapshotState> {
         val element = input.decodeJsonElement()
         val obj = element as? JsonObject
             ?: error("Expected JsonObject for SnapshotState")
-        // Try the most distinctive shape first. AutomationRunState has required
-        // \`automation\`, \`origin\`, and \`sessions\`; AutomationState has
-        // required \`entries\`; SessionState has required
+        // Try the most distinctive shape first. SessionState has required
         // \`lifecycle\`; ChatState has required \`turns\`; ChangesetState has
         // required \`status\` + \`files\`; ResourceWatchState has required
         // \`root\` + \`recursive\`; AnnotationsState has required \`annotations\`
@@ -868,14 +691,8 @@ internal object SnapshotStateSerializer : KSerializer<SnapshotState> {
         // key); TerminalState has required \`content\`; RootState is the
         // catch-all.
         return when {
-            obj.containsKey("automation") && obj.containsKey("origin") && obj.containsKey("sessions") ->
-                SnapshotState.AutomationRun(input.json.decodeFromJsonElement(AutomationRunState.serializer(), element))
-            obj.containsKey("entries") ->
-                SnapshotState.Automations(input.json.decodeFromJsonElement(AutomationState.serializer(), element))
             obj.containsKey("lifecycle") -> SnapshotState.Session(input.json.decodeFromJsonElement(SessionState.serializer(), element))
             obj.containsKey("turns") -> SnapshotState.Chat(input.json.decodeFromJsonElement(ChatState.serializer(), element))
-            obj.containsKey("instanceId") && obj.containsKey("extensionId") && obj.containsKey("canvasId") ->
-                SnapshotState.Canvas(input.json.decodeFromJsonElement(CanvasState.serializer(), element))
             obj.containsKey("status") && obj.containsKey("files") ->
                 SnapshotState.Changeset(input.json.decodeFromJsonElement(ChangesetState.serializer(), element))
             obj.containsKey("root") && obj.containsKey("recursive") ->
@@ -895,13 +712,10 @@ internal object SnapshotStateSerializer : KSerializer<SnapshotState> {
             is SnapshotState.Root -> output.json.encodeToJsonElement(RootState.serializer(), value.value)
             is SnapshotState.Session -> output.json.encodeToJsonElement(SessionState.serializer(), value.value)
             is SnapshotState.Chat -> output.json.encodeToJsonElement(ChatState.serializer(), value.value)
-            is SnapshotState.Canvas -> output.json.encodeToJsonElement(CanvasState.serializer(), value.value)
             is SnapshotState.Terminal -> output.json.encodeToJsonElement(TerminalState.serializer(), value.value)
             is SnapshotState.Changeset -> output.json.encodeToJsonElement(ChangesetState.serializer(), value.value)
             is SnapshotState.ResourceWatch -> output.json.encodeToJsonElement(ResourceWatchState.serializer(), value.value)
             is SnapshotState.Annotations -> output.json.encodeToJsonElement(AnnotationsState.serializer(), value.value)
-            is SnapshotState.Automations -> output.json.encodeToJsonElement(AutomationState.serializer(), value.value)
-            is SnapshotState.AutomationRun -> output.json.encodeToJsonElement(AutomationRunState.serializer(), value.value)
         }
         output.encodeJsonElement(element)
     }
@@ -916,6 +730,7 @@ sealed interface ToolResultContent {
     @JvmInline value class Resource(val value: ToolResultResourceContent) : ToolResultContent
     @JvmInline value class FileEdit(val value: ToolResultFileEditContent) : ToolResultContent
     @JvmInline value class Terminal(val value: ToolResultTerminalContent) : ToolResultContent
+    @JvmInline value class TerminalComplete(val value: ToolResultTerminalCompleteContent) : ToolResultContent
     @JvmInline value class Subagent(val value: ToolResultSubagentContent) : ToolResultContent
 
     /**
@@ -945,6 +760,7 @@ internal object ToolResultContentSerializer : KSerializer<ToolResultContent> {
             "resource" -> ToolResultContent.Resource(input.json.decodeFromJsonElement(ToolResultResourceContent.serializer(), element))
             "fileEdit" -> ToolResultContent.FileEdit(input.json.decodeFromJsonElement(ToolResultFileEditContent.serializer(), element))
             "terminal" -> ToolResultContent.Terminal(input.json.decodeFromJsonElement(ToolResultTerminalContent.serializer(), element))
+            "terminalComplete" -> ToolResultContent.TerminalComplete(input.json.decodeFromJsonElement(ToolResultTerminalCompleteContent.serializer(), element))
             "subagent" -> ToolResultContent.Subagent(input.json.decodeFromJsonElement(ToolResultSubagentContent.serializer(), element))
             else -> ToolResultContent.Unknown(obj)
         }
@@ -959,6 +775,7 @@ internal object ToolResultContentSerializer : KSerializer<ToolResultContent> {
             is ToolResultContent.Resource -> output.json.encodeToJsonElement(ToolResultResourceContent.serializer(), value.value)
             is ToolResultContent.FileEdit -> output.json.encodeToJsonElement(ToolResultFileEditContent.serializer(), value.value)
             is ToolResultContent.Terminal -> output.json.encodeToJsonElement(ToolResultTerminalContent.serializer(), value.value)
+            is ToolResultContent.TerminalComplete -> output.json.encodeToJsonElement(ToolResultTerminalCompleteContent.serializer(), value.value)
             is ToolResultContent.Subagent -> output.json.encodeToJsonElement(ToolResultSubagentContent.serializer(), value.value)
             is ToolResultContent.Unknown -> value.raw
         }
@@ -978,15 +795,9 @@ const STATE_ENUMS = [
   'ToolCallRiskAssessmentStatus',
   'ToolCallCancellationReason', 'ConfirmationOptionKind',
   'ToolCallContributorKind',
-  'ToolResultContentType', 'CustomizationType', 'CustomizationEnablementKind', 'CustomizationLoadStatus',
-  'TerminalClaimKind', 'TerminalLifecycleStatus',
-  'BackgroundWorkKind',
+  'ToolResultContentType', 'CustomizationType', 'CustomizationLoadStatus', 'TerminalClaimKind',
   'McpServerStatus', 'McpAuthRequiredReason',
   'ChangesetStatus', 'ChangesetOperationStatus', 'ChangesetOperationScope', 'ResourceChangeType',
-  'SessionOriginKind',
-  'AutomationOperation', 'AutomationMisfirePolicy', 'AutomationTriggerKind',
-  'AutomationDisableConditionKind',
-  'AutomationRunStatus', 'AutomationRunOriginKind',
 ];
 
 const STATE_STRUCTS = [
@@ -995,12 +806,10 @@ const STATE_STRUCTS = [
   'MultipleChatsCapability',
   'MultipleWorkingDirectoriesCapability',
   'SessionModelInfo', 'ModelSelection', 'AgentSelection', 'ConfigPropertySchema', 'ConfigSchema',
-  'PendingMessage', 'ChatState', 'ChatSummary', 'SideChatSelection', 'SessionState', 'SessionActiveClient',
-  'BackgroundShellWork', 'BackgroundSubagentWork',
-  'CanvasReference', 'CanvasState',
+  'PendingMessage', 'ChatState', 'ChatSummary', 'SessionState', 'SessionActiveClient',
   'SessionChatInputRequest', 'SessionToolConfirmationRequest', 'SessionToolClientExecutionRequest',
   'SessionToolAuthenticationRequest',
-  'SessionSummary', 'SessionChatSummary', 'ChangesSummary', 'ProjectInfo', 'SessionConfigState', 'Turn', 'ActiveTurn', 'Message',
+  'SessionSummary', 'ChangesSummary', 'ProjectInfo', 'SessionConfigState', 'Turn', 'ActiveTurn', 'Message',
   'MessageOrigin',
   'ChatInputOption',
   'ChatInputTextAnswerValue', 'ChatInputNumberAnswerValue',
@@ -1013,11 +822,10 @@ const STATE_STRUCTS = [
   'ChatInputRequest',
   'TextPosition', 'TextRange', 'TextSelection',
   'SimpleMessageAttachment', 'MessageEmbeddedResourceAttachment', 'MessageResourceAttachment',
-  'MessageAnnotationsAttachment', 'MessageChatAttachment',
+  'MessageAnnotationsAttachment',
   'MarkdownResponsePart', 'ContentRef',
-  'ResourceResponsePart', 'ToolCallResponsePart', 'ReasoningResponsePart',
+  'ResourceReponsePart', 'ToolCallResponsePart', 'ReasoningResponsePart',
   'SystemNotificationResponsePart', 'InputRequestResponsePart',
-  'ErrorResponsePart',
   'ToolCallResult', 'ToolCallStreamingState',
   'ToolCallPendingConfirmationState', 'ToolCallRunningState', 'ToolCallAuthRequiredState',
   'ToolCallPendingResultConfirmationState', 'ToolCallCompletedState',
@@ -1026,7 +834,7 @@ const STATE_STRUCTS = [
   'ToolDefinition', 'ToolAnnotations',
   'ToolResultTextContent', 'ToolResultEmbeddedResourceContent',
   'ToolResultResourceContent', 'ToolResultFileEditContent',
-  'ToolResultTerminalContent',
+  'ToolResultTerminalContent', 'ToolResultTerminalCompleteContent',
   'ToolResultSubagentContent',
   'CustomizationLoadingState', 'CustomizationLoadedState',
   'CustomizationDegradedState', 'CustomizationErrorState',
@@ -1037,28 +845,14 @@ const STATE_STRUCTS = [
   'McpServerStartingState', 'McpServerReadyState', 'McpServerAuthRequiredState',
   'McpServerErrorState', 'McpServerStoppedState', 'McpOAuthClient', 'McpAuthRequirement',
   'ToolCallClientContributor', 'ToolCallMcpContributor',
-  'FileEditSide', 'FileEditDiffStats', 'FileEdit', 'FileEditCollection',
-  'TerminalCommandResult', 'TerminalInfo',
-  'TerminalClientClaim', 'TerminalSessionClaim',
-  'TerminalRunningLifecycleState', 'TerminalExitedLifecycleState', 'TerminalState',
+  'FileEdit', 'TerminalInfo',
+  'TerminalClientClaim', 'TerminalSessionClaim', 'TerminalState',
   'TerminalUnclassifiedPart', 'TerminalCommandPart',
   'UsageInfo', 'ErrorInfo', 'Snapshot',
   'Changeset', 'ChangesetCapabilities', 'ChangesetState', 'ChangesetFile', 'ChangesetOperation',
-  'AnnotationsSummary', 'AnnotationsState', 'AnnotationOrigin', 'Annotation', 'AnnotationEntry',
+  'AnnotationsSummary', 'AnnotationsState', 'Annotation', 'AnnotationEntry',
   'TelemetryCapabilities',
   'ResourceWatchState', 'ResourceChange',
-  'AutomationSessionOrigin', 'AutomationSchedule',
-  'AutomationScheduleTrigger', 'AutomationEventTrigger',
-  'AutomationTriggerEventDefinition', 'AutomationTriggerDefinition',
-  'AutomationSessionTemplate', 'AutomationDefinition',
-  'AutomationDefinitionPatch',
-  'AutomationAfterRunsCondition', 'AutomationAfterDateCondition',
-  'AutomationEntry', 'AutomationState',
-  'AutomationManualRunOrigin', 'AutomationTriggeredRunOrigin',
-  'AutomationPendingRunLifecycle', 'AutomationRunningRunLifecycle',
-  'AutomationCompletedRunLifecycle',
-  'AutomationFailedRunLifecycle', 'AutomationCancelledRunLifecycle',
-  'AutomationRunSummary', 'AutomationRunState',
 ];
 
 const RESPONSE_PART_UNION: UnionConfig = {
@@ -1066,12 +860,11 @@ const RESPONSE_PART_UNION: UnionConfig = {
   discriminantField: 'kind',
   variants: [
     { caseName: 'Markdown', structName: 'MarkdownResponsePart', discriminantValue: 'markdown' },
-    { caseName: 'ContentRef', structName: 'ResourceResponsePart', discriminantValue: 'contentRef' },
+    { caseName: 'ContentRef', structName: 'ResourceReponsePart', discriminantValue: 'contentRef' },
     { caseName: 'ToolCall', structName: 'ToolCallResponsePart', discriminantValue: 'toolCall' },
     { caseName: 'Reasoning', structName: 'ReasoningResponsePart', discriminantValue: 'reasoning' },
     { caseName: 'SystemNotification', structName: 'SystemNotificationResponsePart', discriminantValue: 'systemNotification' },
     { caseName: 'InputRequest', structName: 'InputRequestResponsePart', discriminantValue: 'inputRequest' },
-    { caseName: 'Error', structName: 'ErrorResponsePart', discriminantValue: 'error' },
   ],
   unknown: true,
 };
@@ -1126,7 +919,6 @@ function generateChatOriginKotlin(): string {
 sealed interface ChatOrigin {
     @JvmInline value class User(val value: ChatOriginUser) : ChatOrigin
     @JvmInline value class Fork(val value: ChatOriginFork) : ChatOrigin
-    @JvmInline value class SideChat(val value: ChatOriginSideChat) : ChatOrigin
     @JvmInline value class Tool(val value: ChatOriginTool) : ChatOrigin
     @JvmInline value class Unknown(val raw: JsonObject) : ChatOrigin
 }
@@ -1150,14 +942,6 @@ data class ChatOriginTool(
     val toolCallId: String,
 )
 
-@Serializable
-data class ChatOriginSideChat(
-    val kind: ChatOriginKind = ChatOriginKind.SIDE_CHAT,
-    val chat: String,
-    val turnId: String,
-    val selection: SideChatSelection? = null,
-)
-
 internal object ChatOriginSerializer : KSerializer<ChatOrigin> {
     override val descriptor: SerialDescriptor = buildClassSerialDescriptor("ChatOrigin")
 
@@ -1168,7 +952,6 @@ internal object ChatOriginSerializer : KSerializer<ChatOrigin> {
         return when ((obj["kind"] as? JsonPrimitive)?.contentOrNull) {
             "user" -> ChatOrigin.User(input.json.decodeFromJsonElement(ChatOriginUser.serializer(), element))
             "fork" -> ChatOrigin.Fork(input.json.decodeFromJsonElement(ChatOriginFork.serializer(), element))
-            "sideChat" -> ChatOrigin.SideChat(input.json.decodeFromJsonElement(ChatOriginSideChat.serializer(), element))
             "tool" -> ChatOrigin.Tool(input.json.decodeFromJsonElement(ChatOriginTool.serializer(), element))
             else -> ChatOrigin.Unknown(obj)
         }
@@ -1179,7 +962,6 @@ internal object ChatOriginSerializer : KSerializer<ChatOrigin> {
         val element: JsonElement = when (value) {
             is ChatOrigin.User -> output.json.encodeToJsonElement(ChatOriginUser.serializer(), value.value)
             is ChatOrigin.Fork -> output.json.encodeToJsonElement(ChatOriginFork.serializer(), value.value)
-            is ChatOrigin.SideChat -> output.json.encodeToJsonElement(ChatOriginSideChat.serializer(), value.value)
             is ChatOrigin.Tool -> output.json.encodeToJsonElement(ChatOriginTool.serializer(), value.value)
             is ChatOrigin.Unknown -> value.raw
         }
@@ -1236,7 +1018,6 @@ const MESSAGE_ATTACHMENT_UNION: UnionConfig = {
     { caseName: 'EmbeddedResource', structName: 'MessageEmbeddedResourceAttachment', discriminantValue: 'embeddedResource' },
     { caseName: 'Resource', structName: 'MessageResourceAttachment', discriminantValue: 'resource' },
     { caseName: 'Annotations', structName: 'MessageAnnotationsAttachment', discriminantValue: 'annotations' },
-    { caseName: 'Chat', structName: 'MessageChatAttachment', discriminantValue: 'chat' },
   ],
   unknown: true,
 };
@@ -1311,15 +1092,6 @@ const TOOL_CALL_RISK_ASSESSMENT_UNION: UnionConfig = {
   unknown: true,
 };
 
-const TERMINAL_LIFECYCLE_STATE_UNION: UnionConfig = {
-  name: 'TerminalLifecycleState',
-  discriminantField: 'status',
-  variants: [
-    { caseName: 'Running', structName: 'TerminalRunningLifecycleState', discriminantValue: 'running' },
-    { caseName: 'Exited', structName: 'TerminalExitedLifecycleState', discriminantValue: 'exited' },
-  ],
-};
-
 const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
   name: 'SessionInputRequest',
   discriminantField: 'kind',
@@ -1330,68 +1102,6 @@ const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
     { caseName: 'ToolAuthentication', structName: 'SessionToolAuthenticationRequest', discriminantValue: 'toolAuthentication' },
   ],
   unknown: true,
-};
-
-const BACKGROUND_WORK_UNION: UnionConfig = {
-  name: 'BackgroundWork',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Shell', structName: 'BackgroundShellWork', discriminantValue: 'shell' },
-    { caseName: 'Subagent', structName: 'BackgroundSubagentWork', discriminantValue: 'subagent' },
-  ],
-  unknown: true,
-};
-
-const SESSION_ORIGIN_UNION: UnionConfig = {
-  name: 'SessionOrigin',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Automation', structName: 'AutomationSessionOrigin', discriminantValue: 'automation' },
-  ],
-  injectDiscriminantOnSerialize: true,
-};
-
-const AUTOMATION_TRIGGER_UNION: UnionConfig = {
-  name: 'AutomationTrigger',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Schedule', structName: 'AutomationScheduleTrigger', discriminantValue: 'schedule' },
-    { caseName: 'Event', structName: 'AutomationEventTrigger', discriminantValue: 'event' },
-  ],
-  injectDiscriminantOnSerialize: true,
-};
-
-const AUTOMATION_DISABLE_CONDITION_UNION: UnionConfig = {
-  name: 'AutomationDisableCondition',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'AfterRuns', structName: 'AutomationAfterRunsCondition', discriminantValue: 'afterRuns' },
-    { caseName: 'AfterDate', structName: 'AutomationAfterDateCondition', discriminantValue: 'afterDate' },
-  ],
-  injectDiscriminantOnSerialize: true,
-};
-
-const AUTOMATION_RUN_ORIGIN_UNION: UnionConfig = {
-  name: 'AutomationRunOrigin',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Manual', structName: 'AutomationManualRunOrigin', discriminantValue: 'manual' },
-    { caseName: 'Trigger', structName: 'AutomationTriggeredRunOrigin', discriminantValue: 'trigger' },
-  ],
-  injectDiscriminantOnSerialize: true,
-};
-
-const AUTOMATION_RUN_LIFECYCLE_UNION: UnionConfig = {
-  name: 'AutomationRunLifecycle',
-  discriminantField: 'status',
-  variants: [
-    { caseName: 'Pending', structName: 'AutomationPendingRunLifecycle', discriminantValue: 'pending' },
-    { caseName: 'Running', structName: 'AutomationRunningRunLifecycle', discriminantValue: 'running' },
-    { caseName: 'Completed', structName: 'AutomationCompletedRunLifecycle', discriminantValue: 'completed' },
-    { caseName: 'Failed', structName: 'AutomationFailedRunLifecycle', discriminantValue: 'failed' },
-    { caseName: 'Cancelled', structName: 'AutomationCancelledRunLifecycle', discriminantValue: 'cancelled' },
-  ],
-  injectDiscriminantOnSerialize: true,
 };
 
 function generateStateFile(project: Project): string {
@@ -1429,64 +1139,41 @@ function generateStateFile(project: Project): string {
     }
   }
 
-  lines.push('// ─── Customization Enablement Union ─────────────────────────────────────');
-  lines.push('');
-  lines.push(generateCustomizationEnablementKotlin());
-  lines.push('');
-
-  lines.push('// ─── Tool Input ──────────────────────────────────────────────────────────────');
-  lines.push('');
-  lines.push(generateToolInput());
-  lines.push('');
-
   lines.push('// ─── Discriminated Unions ───────────────────────────────────────────────────');
   lines.push('');
   lines.push(generateChatOriginKotlin());
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, RESPONSE_PART_UNION));
+  lines.push(generateDiscriminatedUnion(RESPONSE_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONFIRMATION_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONFIRMATION_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CLAIM_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CLAIM_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CONTENT_PART_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CONTENT_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_QUESTION_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_QUESTION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_ANSWER_VALUE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_ANSWER_VALUE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_ANSWER_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_ANSWER_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MESSAGE_ATTACHMENT_UNION));
+  lines.push(generateDiscriminatedUnion(MESSAGE_ATTACHMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHILD_CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CHILD_CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_LOAD_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_LOAD_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MCP_SERVER_STATUS_UNION));
+  lines.push(generateDiscriminatedUnion(MCP_SERVER_STATUS_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONTRIBUTOR_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONTRIBUTOR_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_RISK_ASSESSMENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_RISK_ASSESSMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_LIFECYCLE_STATE_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_REQUEST_UNION));
-  lines.push(generateDiscriminatedUnion(project, BACKGROUND_WORK_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_TRIGGER_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_DISABLE_CONDITION_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_LIFECYCLE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_REQUEST_UNION));
   lines.push('');
   lines.push(generateToolResultContentUnion());
   lines.push('');
@@ -1506,7 +1193,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/chatAdded', caseName: 'SessionChatAdded', tsInterface: 'SessionChatAddedAction' },
   { type: 'session/chatRemoved', caseName: 'SessionChatRemoved', tsInterface: 'SessionChatRemovedAction' },
   { type: 'session/chatUpdated', caseName: 'SessionChatUpdated', tsInterface: 'SessionChatUpdatedAction' },
-  { type: 'session/chatsReordered', caseName: 'SessionChatsReordered', tsInterface: 'SessionChatsReorderedAction' },
   { type: 'session/defaultChatChanged', caseName: 'SessionDefaultChatChanged', tsInterface: 'SessionDefaultChatChangedAction' },
   { type: 'chat/turnStarted', caseName: 'ChatTurnStarted', tsInterface: 'ChatTurnStartedAction' },
   { type: 'chat/delta', caseName: 'ChatDelta', tsInterface: 'ChatDeltaAction' },
@@ -1523,14 +1209,7 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'chat/turnComplete', caseName: 'ChatTurnComplete', tsInterface: 'ChatTurnCompleteAction' },
   { type: 'chat/turnCancelled', caseName: 'ChatTurnCancelled', tsInterface: 'ChatTurnCancelledAction' },
   { type: 'chat/error', caseName: 'ChatError', tsInterface: 'ChatErrorAction' },
-  { type: 'chat/turnResume', caseName: 'ChatTurnResume', tsInterface: 'ChatTurnResumeAction' },
   { type: 'chat/activityChanged', caseName: 'ChatActivityChanged', tsInterface: 'ChatActivityChangedAction' },
-  { type: 'chat/backgroundWorkSet', caseName: 'ChatBackgroundWorkSet', tsInterface: 'ChatBackgroundWorkSetAction' },
-  { type: 'chat/backgroundWorkRemoved', caseName: 'ChatBackgroundWorkRemoved', tsInterface: 'ChatBackgroundWorkRemovedAction' },
-  { type: 'chat/movableChanged', caseName: 'ChatMovableChanged', tsInterface: 'ChatMovableChangedAction' },
-  { type: 'chat/changesetsChanged', caseName: 'ChatChangesetsChanged', tsInterface: 'ChatChangesetsChangedAction' },
-  { type: 'chat/canvasesChanged', caseName: 'ChatCanvasesChanged', tsInterface: 'ChatCanvasesChangedAction' },
-  { type: 'canvas/stateChanged', caseName: 'CanvasStateChanged', tsInterface: 'CanvasStateChangedAction' },
   { type: 'session/titleChanged', caseName: 'SessionTitleChanged', tsInterface: 'SessionTitleChangedAction' },
   { type: 'chat/usage', caseName: 'ChatUsage', tsInterface: 'ChatUsageAction' },
   { type: 'chat/reasoning', caseName: 'ChatReasoning', tsInterface: 'ChatReasoningAction' },
@@ -1543,7 +1222,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/activeClientRemoved', caseName: 'SessionActiveClientRemoved', tsInterface: 'SessionActiveClientRemovedAction' },
   { type: 'session/workingDirectorySet', caseName: 'SessionWorkingDirectorySet', tsInterface: 'SessionWorkingDirectorySetAction' },
   { type: 'session/workingDirectoryRemoved', caseName: 'SessionWorkingDirectoryRemoved', tsInterface: 'SessionWorkingDirectoryRemovedAction' },
-  { type: 'session/workingDirectoryReplaced', caseName: 'SessionWorkingDirectoryReplaced', tsInterface: 'SessionWorkingDirectoryReplacedAction' },
   { type: 'chat/workingDirectorySet', caseName: 'ChatWorkingDirectorySet', tsInterface: 'ChatWorkingDirectorySetAction' },
   { type: 'chat/workingDirectoryRemoved', caseName: 'ChatWorkingDirectoryRemoved', tsInterface: 'ChatWorkingDirectoryRemovedAction' },
   { type: 'session/inputNeededSet', caseName: 'SessionInputNeededSet', tsInterface: 'SessionInputNeededSetAction' },
@@ -1552,8 +1230,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'chat/pendingMessageRemoved', caseName: 'ChatPendingMessageRemoved', tsInterface: 'ChatPendingMessageRemovedAction' },
   { type: 'chat/queuedMessagesReordered', caseName: 'ChatQueuedMessagesReordered', tsInterface: 'ChatQueuedMessagesReorderedAction' },
   { type: 'chat/draftChanged', caseName: 'ChatDraftChanged', tsInterface: 'ChatDraftChangedAction' },
-  { type: 'chat/isReadChanged', caseName: 'ChatIsReadChanged', tsInterface: 'ChatIsReadChangedAction' },
-  { type: 'chat/isArchivedChanged', caseName: 'ChatIsArchivedChanged', tsInterface: 'ChatIsArchivedChangedAction' },
   { type: 'chat/inputRequested', caseName: 'ChatInputRequested', tsInterface: 'ChatInputRequestedAction' },
   { type: 'chat/inputAnswerChanged', caseName: 'ChatInputAnswerChanged', tsInterface: 'ChatInputAnswerChangedAction' },
   { type: 'chat/inputCompleted', caseName: 'ChatInputCompleted', tsInterface: 'ChatInputCompletedAction' },
@@ -1564,7 +1240,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'session/mcpServerStateChanged', caseName: 'SessionMcpServerStateChanged', tsInterface: 'SessionMcpServerStateChangedAction' },
   { type: 'session/mcpServerStartRequested', caseName: 'SessionMcpServerStartRequested', tsInterface: 'SessionMcpServerStartRequestedAction' },
   { type: 'session/mcpServerStopRequested', caseName: 'SessionMcpServerStopRequested', tsInterface: 'SessionMcpServerStopRequestedAction' },
-  { type: 'session/mcpServerBackgroundRequested', caseName: 'SessionMcpServerBackgroundRequested', tsInterface: 'SessionMcpServerBackgroundRequestedAction' },
   { type: 'chat/truncated', caseName: 'ChatTruncated', tsInterface: 'ChatTruncatedAction' },
   { type: 'chat/turnsLoaded', caseName: 'ChatTurnsLoaded', tsInterface: 'ChatTurnsLoadedAction' },
   { type: 'session/configChanged', caseName: 'SessionConfigChanged', tsInterface: 'SessionConfigChangedAction' },
@@ -1596,15 +1271,6 @@ const ACTION_VARIANTS: { type: string; caseName: string; tsInterface: string }[]
   { type: 'terminal/commandExecuted', caseName: 'TerminalCommandExecuted', tsInterface: 'TerminalCommandExecutedAction' },
   { type: 'terminal/commandFinished', caseName: 'TerminalCommandFinished', tsInterface: 'TerminalCommandFinishedAction' },
   { type: 'resourceWatch/changed', caseName: 'ResourceWatchChanged', tsInterface: 'ResourceWatchChangedAction' },
-  { type: 'automation/createRequested', caseName: 'AutomationCreateRequested', tsInterface: 'AutomationCreateRequestedAction' },
-  { type: 'automation/updateRequested', caseName: 'AutomationUpdateRequested', tsInterface: 'AutomationUpdateRequestedAction' },
-  { type: 'automation/set', caseName: 'AutomationSet', tsInterface: 'AutomationSetAction' },
-  { type: 'automation/removed', caseName: 'AutomationRemoved', tsInterface: 'AutomationRemovedAction' },
-  { type: 'automationRun/lifecycleChanged', caseName: 'AutomationRunLifecycleChanged', tsInterface: 'AutomationRunLifecycleChangedAction' },
-  { type: 'automationRun/sessionSet', caseName: 'AutomationRunSessionSet', tsInterface: 'AutomationRunSessionSetAction' },
-  { type: 'automationRun/sessionRemoved', caseName: 'AutomationRunSessionRemoved', tsInterface: 'AutomationRunSessionRemovedAction' },
-  { type: 'automationRun/primarySessionChanged', caseName: 'AutomationRunPrimarySessionChanged', tsInterface: 'AutomationRunPrimarySessionChangedAction' },
-  { type: 'automationRun/cancelRequested', caseName: 'AutomationRunCancelRequested', tsInterface: 'AutomationRunCancelRequestedAction' },
 ];
 
 /** Merged data class for the approved/denied tool call confirmed action. */
@@ -1761,21 +1427,15 @@ function generateActionsFile(project: Project): string {
 
 // ─── Commands File Generator ─────────────────────────────────────────────────
 
-const COMMAND_ENUMS = ['ReconnectResultType', 'ChatSourceKind', 'ChatMoveDestinationKind', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
+const COMMAND_ENUMS = ['ReconnectResultType', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
 
 const COMMAND_STRUCTS = [
   'InitializeParams', 'InitializeResult',
-  'ClientCapabilities', 'AutomationCapabilities',
-  'AutomationCreateCapability',
-  'AutomationScheduleCapabilities',
-  'AutomationRunCancellationCapability',
-  'AutomationCustomizationsCapability',
-  'Implementation',
+  'ClientCapabilities', 'Implementation',
   'ReconnectParams', 'ReconnectReplayResult', 'ReconnectSnapshotResult',
   'SubscribeParams', 'SubscribeView', 'SubscriptionDeliveryOptions', 'SubscribeResult',
-  'CreateSessionParams', 'DisposeSessionParams',
-  'CreateChatParams', 'DisposeChatParams',
-  'ChatMoveToSessionDestination', 'ChatMoveToNewSessionDestination', 'MoveChatParams', 'MoveChatResult',
+  'SessionForkSource', 'CreateSessionParams', 'DisposeSessionParams',
+  'ChatForkSource', 'CreateChatParams', 'DisposeChatParams',
   'ListSessionsParams', 'ListSessionsResult',
   'ResourceReadParams', 'ResourceReadResult',
   'ResourceWriteParams', 'ResourceWriteResult',
@@ -1798,9 +1458,6 @@ const COMMAND_STRUCTS = [
   'CompletionsParams', 'CompletionItem', 'CompletionsResult',
   'InvokeChangesetOperationParams', 'InvokeChangesetOperationResult',
   'ChangesetOperationFollowUp',
-  'ListAutomationTriggerDefinitionsParams', 'ListAutomationTriggerDefinitionsResult',
-  'RunAutomationParams', 'RunAutomationResult',
-  'FetchAutomationRunsParams', 'FetchAutomationRunsResult',
 ];
 
 const RECONNECT_RESULT_UNION: UnionConfig = {
@@ -1811,94 +1468,6 @@ const RECONNECT_RESULT_UNION: UnionConfig = {
     { caseName: 'Snapshot', structName: 'ReconnectSnapshotResult', discriminantValue: 'snapshot' },
   ],
 };
-
-const CHAT_SOURCE_UNION: UnionConfig = {
-  name: 'ChatSource',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Fork', structName: 'ForkChatSource', discriminantValue: 'fork' },
-    { caseName: 'SideChat', structName: 'SideChatSource', discriminantValue: 'sideChat' },
-  ],
-};
-
-const CHAT_MOVE_DESTINATION_UNION: UnionConfig = {
-  name: 'ChatMoveDestination',
-  discriminantField: 'kind',
-  variants: [
-    { caseName: 'Session', structName: 'ChatMoveToSessionDestination', discriminantValue: 'session' },
-    { caseName: 'NewSession', structName: 'ChatMoveToNewSessionDestination', discriminantValue: 'newSession' },
-  ],
-};
-
-function generateCustomizationEnablementKotlin(): string {
-  return `/**
- * A single explicit customization enablement decision.
- */
-@Serializable(with = CustomizationEnablementSerializer::class)
-sealed interface CustomizationEnablement {
-    @JvmInline value class Global(val value: CustomizationEnablementGlobal) : CustomizationEnablement
-    @JvmInline value class Workspace(val value: CustomizationEnablementWorkspace) : CustomizationEnablement
-    @JvmInline value class Session(val value: CustomizationEnablementSession) : CustomizationEnablement
-}
-
-@Serializable
-data class CustomizationEnablementGlobal(
-    val enabled: Boolean,
-    val kind: String = "global",
-)
-
-@Serializable
-data class CustomizationEnablementWorkspace(
-    val uri: URI,
-    val enabled: Boolean,
-    val kind: String = "workspace",
-)
-
-@Serializable
-data class CustomizationEnablementSession(
-    val enabled: Boolean,
-    val kind: String = "session",
-)
-
-internal object CustomizationEnablementSerializer : KSerializer<CustomizationEnablement> {
-    override val descriptor: SerialDescriptor =
-        buildClassSerialDescriptor("CustomizationEnablement")
-
-    override fun deserialize(decoder: Decoder): CustomizationEnablement {
-        val input = decoder as? JsonDecoder
-            ?: error("CustomizationEnablement can only be deserialized from JSON")
-        val element = input.decodeJsonElement()
-        val obj = element as? JsonObject
-            ?: error("Expected JsonObject for CustomizationEnablement")
-        return when ((obj["kind"] as? JsonPrimitive)?.contentOrNull) {
-            "global" -> CustomizationEnablement.Global(
-                input.json.decodeFromJsonElement(CustomizationEnablementGlobal.serializer(), element),
-            )
-            "workspace" -> CustomizationEnablement.Workspace(
-                input.json.decodeFromJsonElement(CustomizationEnablementWorkspace.serializer(), element),
-            )
-            "session" -> CustomizationEnablement.Session(
-                input.json.decodeFromJsonElement(CustomizationEnablementSession.serializer(), element),
-            )
-            else -> error("Unknown CustomizationEnablement kind")
-        }
-    }
-
-    override fun serialize(encoder: Encoder, value: CustomizationEnablement) {
-        val output = encoder as? JsonEncoder
-            ?: error("CustomizationEnablement can only be serialized to JSON")
-        val element: JsonElement = when (value) {
-            is CustomizationEnablement.Global ->
-                output.json.encodeToJsonElement(CustomizationEnablementGlobal.serializer(), value.value)
-            is CustomizationEnablement.Workspace ->
-                output.json.encodeToJsonElement(CustomizationEnablementWorkspace.serializer(), value.value)
-            is CustomizationEnablement.Session ->
-                output.json.encodeToJsonElement(CustomizationEnablementSession.serializer(), value.value)
-        }
-        output.encodeJsonElement(element)
-    }
-}`;
-}
 
 /**
  * ChangesetOperationTarget — TS discriminated union over `{ kind: "resource" }`
@@ -1987,22 +1556,6 @@ function generateCommandsFile(project: Project): string {
 
   lines.push('// ─── Command Types ──────────────────────────────────────────────────────────');
   lines.push('');
-  lines.push(generateFixedChatSourceBranchKotlin(
-    'ForkChatSource',
-    'FORK',
-    'fork',
-    'Copies source history through a completed turn into the new chat.',
-    'Completed turn identifier in the source chat.\n\nContent through this turn is copied into the new chat\'s visible `turns`.',
-  ));
-  lines.push('');
-  lines.push(generateFixedChatSourceBranchKotlin(
-    'SideChatSource',
-    'SIDE_CHAT',
-    'sideChat',
-    'Supplies source context to a new side chat without copying it into the side\nchat\'s visible history.',
-    'Stable source-turn identifier in the source chat.\n\nHosts resolve this id against the source chat\'s current `activeTurn` or its\nretained `turns` when accepting `createChat`. If it names the current\nactive turn, the host snapshots the source chat\'s retained history plus\nthat turn\'s current user message and any partial assistant response already\navailable. Once that turn later becomes historical, it is still referenced\nby this same identifier.',
-  ));
-  lines.push('');
   const generated = new Set<string>();
   for (const ifaceName of COMMAND_STRUCTS) {
     if (generated.has(ifaceName)) continue;
@@ -2016,18 +1569,9 @@ function generateCommandsFile(project: Project): string {
     }
   }
 
-  lines.push('// ─── ChatSource Union ───────────────────────────────────────────────────────');
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_SOURCE_UNION));
-  lines.push('');
-  lines.push('// ─── ChatMoveDestination Union ──────────────────────────────────────────────');
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_MOVE_DESTINATION_UNION));
-  lines.push('');
-
   lines.push('// ─── ReconnectResult Union ──────────────────────────────────────────────────');
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, RECONNECT_RESULT_UNION));
+  lines.push(generateDiscriminatedUnion(RECONNECT_RESULT_UNION));
   lines.push('');
 
   lines.push('// ─── Changeset Operation Unions ─────────────────────────────────────────────');
@@ -2140,7 +1684,8 @@ function generateErrorsFile(project: Project): string {
   lines.push('    const val TURN_IN_PROGRESS: Int = -32004');
   lines.push('    /** The server cannot speak any of the protocol versions offered by the client */');
   lines.push('    const val UNSUPPORTED_PROTOCOL_VERSION: Int = -32005');
-  lines.push('    // -32006 is intentionally reserved and unassigned.');
+  lines.push('    /** The requested content URI does not exist */');
+  lines.push('    const val CONTENT_NOT_FOUND: Int = -32006');
   lines.push('    /** Authentication required for a protected resource */');
   lines.push('    const val AUTH_REQUIRED: Int = -32007');
   lines.push('    /** The requested file, folder, or URI does not exist */');
@@ -2378,7 +1923,6 @@ function checkExhaustiveness(project: Project): void {
     'ActionType',                   // emitted directly by generateActionsFile(), not via STATE_ENUMS
     'ChangesetOperationTargetKind', // discriminator enum embedded in the hand-rolled ChangesetOperationTarget union
     'StringOrMarkdown',              // generateStringOrMarkdown()
-    'ToolInput',                     // generateToolInput()
     'ToolCallState',                // TOOL_CALL_STATE_UNION discriminated union
     'StateAction',                  // StateAction enum in generateActionsFile()
     'ActionEnvelope',               // generateDataClassFromInterface() call in generateActionsFile()
@@ -2394,8 +1938,6 @@ function checkExhaustiveness(project: Project): void {
     'ChatInputAnswerValue',      // CHAT_INPUT_ANSWER_VALUE_UNION discriminated union
     'ChatInputAnswer',           // CHAT_INPUT_ANSWER_UNION discriminated union
     'ChatOrigin',                // hand-generated union for inline variants
-    'ChatSource',                // CHAT_SOURCE_UNION discriminated union
-    'ChatMoveDestination',       // CHAT_MOVE_DESTINATION_UNION discriminated union
     'ChatToolCallApprovedAction', // merged into ChatToolCallConfirmedAction
     'ChatToolCallDeniedAction',   // merged into ChatToolCallConfirmedAction
     'ChatToolCallConfirmedAction', // emitted as merged variant
@@ -2408,9 +1950,7 @@ function checkExhaustiveness(project: Project): void {
     'McpServerState',              // MCP_SERVER_STATUS_UNION discriminated union
     'ToolCallContributor',          // TOOL_CALL_CONTRIBUTOR_UNION discriminated union
     'ToolCallRiskAssessment',       // TOOL_CALL_RISK_ASSESSMENT_UNION discriminated union
-    'TerminalLifecycleState',       // TERMINAL_LIFECYCLE_STATE_UNION discriminated union
     'SessionInputRequest',          // SESSION_INPUT_REQUEST_UNION discriminated union
-    'BackgroundWork',               // BACKGROUND_WORK_UNION discriminated union
     'ToolCallConfirmationState',    // TOOL_CALL_CONFIRMATION_STATE_UNION discriminated union
     'ChildCustomizationType',       // TS subset alias of CustomizationType; consumers reuse CustomizationType
     'CustomizationLoadState',       // CUSTOMIZATION_LOAD_STATE_UNION discriminated union
@@ -2423,15 +1963,7 @@ function checkExhaustiveness(project: Project): void {
     'AhpErrorCodeWithData',         // type-level alias; not a Kotlin type
     'JsonRpcErrorCode',             // type-level alias over JsonRpcErrorCodes const enum
     'ReconnectResult',              // RECONNECT_RESULT_UNION discriminated union
-    'SessionOrigin',                // SESSION_ORIGIN_UNION discriminated union
-    'AutomationTrigger',            // AUTOMATION_TRIGGER_UNION discriminated union
-    'AutomationDisableCondition', // AUTOMATION_DISABLE_CONDITION_UNION discriminated union
-    'AutomationRunOrigin',          // AUTOMATION_RUN_ORIGIN_UNION discriminated union
-    'AutomationRunLifecycle',       // AUTOMATION_RUN_LIFECYCLE_UNION discriminated union
-    'ForkChatSource',               // generateFixedChatSourceBranchKotlin()
-    'SideChatSource',               // generateFixedChatSourceBranchKotlin()
     'ChangesetOperationTarget',     // generateChangesetOperationTargetKotlin()
-    'CustomizationEnablement',      // generateCustomizationEnablementKotlin()
   ]);
 
   const missing = [...imported].filter(n => !coveredByLists.has(n) && !knownSpecial.has(n));
@@ -2464,7 +1996,7 @@ function generateVersionFile(project: Project): string {
     `public const val PROTOCOL_VERSION: String = ${JSON.stringify(current)}\n\n` +
     '/**\n' +
     ' * Every protocol version this library is willing to negotiate, ordered\n' +
-    ' * most-preferred-first, independently of the development [PROTOCOL_VERSION].\n' +
+    ' * most-preferred-first. The first entry equals [PROTOCOL_VERSION].\n' +
     ' *\n' +
     ' * Pass this list (or a derived `List<String>`) as `protocolVersions` on\n' +
     ' * `InitializeParams` so the same client binary can fall back to older\n' +
@@ -2472,46 +2004,7 @@ function generateVersionFile(project: Project): string {
     ' */\n' +
     'public val SUPPORTED_PROTOCOL_VERSIONS: List<String> = listOf(\n' +
     items +
-    '\n)\n' +
-    `
-/** Select the highest offered version in a supported caret range.
- * Null means the host must send UnsupportedProtocolVersion and close.
- * Malformed versions throw IllegalArgumentException.
- */
-public fun negotiateProtocolVersion(offered: List<String>): String? {
-    fun parse(version: String): List<Long> {
-        require(Regex("(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)\\\\.(0|[1-9][0-9]*)").matches(version)) {
-            "Invalid protocol version: $version"
-        }
-        return version.split('.').map {
-            val value = it.toLongOrNull()
-            require(value != null) { "Invalid protocol version: $version" }
-            value
-        }
-    }
-    fun compare(a: List<Long>, b: List<Long>): Int {
-        for (i in 0..2) {
-            val comparison = a[i].compareTo(b[i])
-            if (comparison != 0) return comparison
-        }
-        return 0
-    }
-    val baselines = SUPPORTED_PROTOCOL_VERSIONS.map(::parse)
-    var selected: String? = null
-    var previous: List<Long>? = null
-    for (version in offered) {
-        val parts = parse(version)
-        if (baselines.any { base ->
-            parts[0] == base[0] && (parts[0] > 0 || parts[1] == base[1]) &&
-                (parts[0] > 0 || parts[1] > 0 || parts[2] == base[2]) && compare(parts, base) >= 0
-        } && (previous == null || compare(parts, previous) > 0)) {
-            selected = version
-            previous = parts
-        }
-    }
-    return selected
-}
-`
+    '\n)\n'
   );
 }
 

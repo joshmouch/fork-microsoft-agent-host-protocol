@@ -17,7 +17,7 @@ const GENERATED_HEADER = `// Generated from types/actions.ts — do not edit
 // Run \`npm run generate\` to regenerate.
 `;
 
-type ActionScope = 'root' | 'session' | 'chat' | 'canvas' | 'terminal' | 'changeset' | 'annotations' | 'resourceWatch' | 'automation' | 'automationRun';
+type ActionScope = 'root' | 'session' | 'chat' | 'terminal' | 'changeset' | 'annotations' | 'resourceWatch';
 
 interface ActionInfo {
   /** The interface name (e.g. 'RootAgentsChangedAction') */
@@ -151,13 +151,10 @@ export function generateActionOrigin(project: Project, outDir: string): void {
     const category = getJsDocTag(node as any, 'category') || '';
     const scope: ActionScope = category === 'Root Actions' ? 'root'
       : category === 'Chat Actions' ? 'chat'
-      : category === 'Canvas Actions' ? 'canvas'
       : category === 'Terminal Actions' ? 'terminal'
       : category === 'Changeset Actions' ? 'changeset'
       : category === 'Annotations Actions' ? 'annotations'
       : category === 'Resource Watch Actions' ? 'resourceWatch'
-      : category === 'Automation Actions' ? 'automation'
-      : category === 'Automation Run Actions' ? 'automationRun'
       : 'session';
     const isClientDispatchable = hasJsDocTag(node as any, 'clientDispatchable');
 
@@ -206,21 +203,16 @@ export function generateActionOrigin(project: Project, outDir: string): void {
   const rootActions = actions.filter(a => a.scope === 'root');
   const sessionActions = actions.filter(a => a.scope === 'session');
   const chatActions = actions.filter(a => a.scope === 'chat');
-  const canvasActions = actions.filter(a => a.scope === 'canvas');
   const terminalActions = actions.filter(a => a.scope === 'terminal');
   const changesetActions = actions.filter(a => a.scope === 'changeset');
   const annotationsActions = actions.filter(a => a.scope === 'annotations');
   const resourceWatchActions = actions.filter(a => a.scope === 'resourceWatch');
-  const automationActions = actions.filter(a => a.scope === 'automation');
-  const automationRunActions = actions.filter(a => a.scope === 'automationRun');
   const clientRootActions = rootActions.filter(a => a.isClientDispatchable);
   const serverRootActions = rootActions.filter(a => !a.isClientDispatchable);
   const clientSessionActions = sessionActions.filter(a => a.isClientDispatchable);
   const serverSessionActions = sessionActions.filter(a => !a.isClientDispatchable);
   const clientChatActions = chatActions.filter(a => a.isClientDispatchable);
   const serverChatActions = chatActions.filter(a => !a.isClientDispatchable);
-  const clientCanvasActions = canvasActions.filter(a => a.isClientDispatchable);
-  const serverCanvasActions = canvasActions.filter(a => !a.isClientDispatchable);
   const clientTerminalActions = terminalActions.filter(a => a.isClientDispatchable);
   const serverTerminalActions = terminalActions.filter(a => !a.isClientDispatchable);
   const clientChangesetActions = changesetActions.filter(a => a.isClientDispatchable);
@@ -229,10 +221,6 @@ export function generateActionOrigin(project: Project, outDir: string): void {
   const serverAnnotationsActions = annotationsActions.filter(a => !a.isClientDispatchable);
   const clientResourceWatchActions = resourceWatchActions.filter(a => a.isClientDispatchable);
   const serverResourceWatchActions = resourceWatchActions.filter(a => !a.isClientDispatchable);
-  const clientAutomationActions = automationActions.filter(a => a.isClientDispatchable);
-  const serverAutomationActions = automationActions.filter(a => !a.isClientDispatchable);
-  const clientAutomationRunActions = automationRunActions.filter(a => a.isClientDispatchable);
-  const serverAutomationRunActions = automationRunActions.filter(a => !a.isClientDispatchable);
 
   const lines: string[] = [GENERATED_HEADER];
 
@@ -248,7 +236,7 @@ export function generateActionOrigin(project: Project, outDir: string): void {
   lines.push(``);
 
   // RootAction
-  lines.push(`// ─── Per-channel Action Unions ───────────────────────────────────────────────`);
+  lines.push(`// ─── Root vs Session vs Chat vs Terminal vs Changeset Action Unions ─────────────────`);
   lines.push(``);
   lines.push(`/** Union of all root-scoped actions. */`);
   lines.push(`export type RootAction =`);
@@ -326,39 +314,6 @@ export function generateActionOrigin(project: Project, outDir: string): void {
   lines.push(`export type ServerChatAction =`);
   for (let i = 0; i < serverChatActions.length; i++) {
     lines.push(`  | ${serverChatActions[i].name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  // CanvasAction
-  lines.push(`/** Union of all canvas-scoped actions. */`);
-  lines.push(`export type CanvasAction =`);
-  for (const a of canvasActions) {
-    lines.push(`  | ${a.name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of canvas actions that clients may dispatch. */`);
-  lines.push(`export type ClientCanvasAction =`);
-  if (clientCanvasActions.length === 0) {
-    lines.push(`  never`);
-  } else {
-    for (const a of clientCanvasActions) {
-      lines.push(`  | ${a.name}`);
-    }
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of canvas actions that only the server may produce. */`);
-  lines.push(`export type ServerCanvasAction =`);
-  if (serverCanvasActions.length === 0) {
-    lines.push(`  never`);
-  } else {
-    for (const a of serverCanvasActions) {
-      lines.push(`  | ${a.name}`);
-    }
   }
   lines.push(`;`);
   lines.push(``);
@@ -499,60 +454,6 @@ export function generateActionOrigin(project: Project, outDir: string): void {
     for (let i = 0; i < serverResourceWatchActions.length; i++) {
       lines.push(`  | ${serverResourceWatchActions[i].name}`);
     }
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  // AutomationAction
-  lines.push(`/** Union of all automation-scoped actions. */`);
-  lines.push(`export type AutomationAction =`);
-  for (const a of automationActions) {
-    lines.push(`  | ${a.name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of automation actions that clients may dispatch. */`);
-  lines.push(`export type ClientAutomationAction =`);
-  if (clientAutomationActions.length === 0) {
-    lines.push(`  never`);
-  } else {
-    for (const a of clientAutomationActions) {
-      lines.push(`  | ${a.name}`);
-    }
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of automation actions that only the server may produce. */`);
-  lines.push(`export type ServerAutomationAction =`);
-  for (const a of serverAutomationActions) {
-    lines.push(`  | ${a.name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  // AutomationRunAction
-  lines.push(`/** Union of all automation-run-scoped actions. */`);
-  lines.push(`export type AutomationRunAction =`);
-  for (const a of automationRunActions) {
-    lines.push(`  | ${a.name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of automation-run actions that clients may dispatch. */`);
-  lines.push(`export type ClientAutomationRunAction =`);
-  for (const a of clientAutomationRunActions) {
-    lines.push(`  | ${a.name}`);
-  }
-  lines.push(`;`);
-  lines.push(``);
-
-  lines.push(`/** Union of automation-run actions that only the server may produce. */`);
-  lines.push(`export type ServerAutomationRunAction =`);
-  for (const a of serverAutomationRunActions) {
-    lines.push(`  | ${a.name}`);
   }
   lines.push(`;`);
   lines.push(``);

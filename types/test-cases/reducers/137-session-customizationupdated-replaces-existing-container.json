@@ -12,6 +12,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "load": {
           "kind": "loading"
         }
@@ -21,6 +22,7 @@
         "id": "plugin-b",
         "uri": "https://plugins.example/b",
         "name": "Plugin B",
+        "enabled": true,
         "load": {
           "kind": "loaded"
         }
@@ -37,6 +39,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "load": {
           "kind": "error",
           "message": "Failed to load"
@@ -55,6 +58,7 @@
         "id": "plugin-a",
         "uri": "https://plugins.example/a",
         "name": "Plugin A",
+        "enabled": true,
         "load": {
           "kind": "error",
           "message": "Failed to load"
@@ -65,6 +69,7 @@
         "id": "plugin-b",
         "uri": "https://plugins.example/b",
         "name": "Plugin B",
+        "enabled": true,
         "load": {
           "kind": "loaded"
         }

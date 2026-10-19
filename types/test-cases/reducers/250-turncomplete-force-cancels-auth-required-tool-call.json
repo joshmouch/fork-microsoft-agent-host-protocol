@@ -37,9 +37,7 @@
       "turnId": "turn-1",
       "toolCallId": "tc-7",
       "invocationMessage": "Search: foo",
-      "toolInput": {
-        "uri": "file:///tool-inputs/tool-input.json"
-      },
+      "toolInput": "foo",
       "confirmed": "not-needed"
     },
     {
@@ -86,21 +84,20 @@
               },
               "_meta": null,
               "invocationMessage": "Search: foo",
-              "toolInput": {
-                "uri": "file:///tool-inputs/tool-input.json"
-              },
+              "toolInput": "foo",
               "reason": "skipped"
             }
           }
         ],
         "usage": null,
-        "state": "complete"
+        "state": "complete",
+        "error": null
       }
     ],
     "activeTurn": null,
     "resource": "copilot:/test-session",
     "title": "Test Session",
     "status": 1,
-    "modifiedAt": "1970-01-01T00:00:01.500Z"
+    "modifiedAt": "1970-01-01T00:00:09.999Z"
   }
 }

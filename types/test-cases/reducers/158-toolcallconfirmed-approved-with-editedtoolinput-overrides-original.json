@@ -1,5 +1,5 @@
 {
-  "description": "toolCallConfirmed replaces inline tool input with edited input",
+  "description": "toolCallConfirmed approved with editedToolInput overrides the original toolInput in the running state",
   "reducer": "chat",
   "initial": {
     "turns": [],

@@ -64,7 +64,8 @@
           }
         ],
         "usage": null,
-        "state": "complete"
+        "state": "complete",
+        "error": null
       }
     ],
     "activeTurn": null,

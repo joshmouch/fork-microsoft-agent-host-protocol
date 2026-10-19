@@ -12,11 +12,9 @@ import type {
   ResponsePart,
   ToolCallResponsePart,
   InputRequestResponsePart,
-  ErrorResponsePart,
   Turn,
   PendingMessage,
   ConfirmationOption,
-  ToolCallContributor,
 } from './state.js';
 import {
   TurnState,
@@ -30,7 +28,6 @@ import {
 import { SessionStatus } from '../channels-session/state.js';
 import type { ChatAction } from '../action-origin.generated.js';
 import { softAssertNever } from '../common/reducer-helpers.js';
-import { addMillisecondsToTimestamp } from '../common/timestamps.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -51,28 +48,6 @@ function tcBaseWithMeta(tc: ToolCallState, meta: Record<string, unknown> | undef
     ...tcBase(tc),
     _meta: meta ?? tc._meta,
   };
-}
-
-function refineToolCallContributor(
-  current: ToolCallContributor | undefined,
-  next: ToolCallContributor | undefined,
-  log?: (msg: string) => void,
-): ToolCallContributor | undefined {
-  if (!next) {
-    return current;
-  }
-  if (current?.kind === ToolCallContributorKind.Client) {
-    if (next.kind === ToolCallContributorKind.Client && next.clientId === current.clientId) {
-      return next;
-    }
-    log?.(`Ignoring contributor change for client tool call from '${current.clientId}'`);
-    return current;
-  }
-  if (next.kind === ToolCallContributorKind.Client) {
-    log?.(`Ignoring late client contributor '${next.clientId}' because client execution ownership must be established at tool call start`);
-    return current;
-  }
-  return next;
 }
 
 /** Resolves a selected option from the confirmation options array by ID. */
@@ -121,15 +96,6 @@ function findOpenInputRequestPart(
   }
   const part = responseParts[index];
   return part.kind === ResponsePartKind.InputRequest ? { index, part } : undefined;
-}
-
-function hasResumableError(turn: Turn): boolean {
-  const part = turn.responseParts[turn.responseParts.length - 1];
-  return part?.kind === ResponsePartKind.Error && part.resumable === true;
-}
-
-function isErrorResponsePart(part: ResponsePart): part is ErrorResponsePart {
-  return part.kind === ResponsePartKind.Error;
 }
 
 /** Bitmask covering the mutually-exclusive activity bits (bits 0–4). */
@@ -181,7 +147,7 @@ function endTurn(
   turnState: TurnState,
   duration: number,
   terminalStatus?: SessionStatus.Error,
-  errorPart?: ErrorResponsePart,
+  error?: { errorType: string; message: string; stack?: string },
 ): ChatState {
   if (!state.activeTurn || state.activeTurn.id !== turnId) {
     return state;
@@ -208,9 +174,6 @@ function endTurn(
       },
     };
   });
-  if (errorPart) {
-    responseParts.push(errorPart);
-  }
 
   const turn: Turn = {
     id: active.id,
@@ -222,13 +185,14 @@ function endTurn(
     responseParts,
     usage: active.usage,
     state: turnState,
+    error,
   };
 
   const next: ChatState = {
     ...state,
     turns: [...state.turns, turn],
     activeTurn: undefined,
-    modifiedAt: addMillisecondsToTimestamp(active.startedAt, turn.duration ?? 0),
+    modifiedAt: new Date(Date.now()).toISOString(),
   };
   return {
     ...next,
@@ -263,7 +227,7 @@ function upsertInputRequestPart(state: ChatState, request: InputRequestResponseP
       responseParts,
     },
   };
-  return { ...next, status: withStatusFlag(summaryStatus(next), SessionStatus.IsRead, false) };
+  return { ...next, status: withStatusFlag(summaryStatus(next), SessionStatus.IsRead, false), modifiedAt: new Date(Date.now()).toISOString() };
 }
 
 /**
@@ -369,7 +333,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
       next = {
         ...next,
         status: withStatusFlag(summaryStatus(next), SessionStatus.IsRead, false),
-        modifiedAt: action.startedAt,
+        modifiedAt: new Date(Date.now()).toISOString(),
       };
 
       // If this turn was auto-started from a pending message, remove it
@@ -398,9 +362,6 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
       if (!state.activeTurn || state.activeTurn.id !== action.turnId) {
         return state;
       }
-      if (isErrorResponsePart(action.part)) {
-        return state;
-      }
       return {
         ...state,
         activeTurn: {
@@ -416,78 +377,10 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
       return endTurn(state, action.turnId, TurnState.Cancelled, action.duration);
 
     case ActionType.ChatError:
-      return endTurn(state, action.turnId, TurnState.Error, action.duration, SessionStatus.Error, action.part);
-
-    case ActionType.ChatTurnResume: {
-      if (state.activeTurn) {
-        return state;
-      }
-      const turnIndex = state.turns.length - 1;
-      const turn = state.turns[turnIndex];
-      if (!turn || turn.id !== action.turnId || turn.state !== TurnState.Error || !hasResumableError(turn)) {
-        return state;
-      }
-      const turns = state.turns.slice();
-      turns.splice(turnIndex, 1);
-      const next: ChatState = {
-        ...state,
-        turns,
-        activeTurn: {
-          id: turn.id,
-          startedAt: turn.startedAt ?? state.modifiedAt,
-          message: turn.message,
-          responseParts: turn.responseParts,
-          usage: turn.usage,
-        },
-      };
-      return {
-        ...next,
-        status: withStatusFlag(summaryStatus(next), SessionStatus.IsRead, false),
-      };
-    }
+      return endTurn(state, action.turnId, TurnState.Error, action.duration, SessionStatus.Error, action.error);
 
     case ActionType.ChatActivityChanged:
       return { ...state, activity: action.activity };
-
-    case ActionType.ChatBackgroundWorkSet: {
-      const list = state.backgroundWork ?? [];
-      const idx = list.findIndex(work => work.id === action.work.id);
-      const next = list.slice();
-      if (idx < 0) {
-        next.push(action.work);
-      } else {
-        next[idx] = action.work;
-      }
-      return { ...state, backgroundWork: next };
-    }
-
-    case ActionType.ChatBackgroundWorkRemoved: {
-      const list = state.backgroundWork ?? [];
-      const idx = list.findIndex(work => work.id === action.id);
-      if (idx < 0) {
-        return state;
-      }
-      const next = list.slice();
-      next.splice(idx, 1);
-      return { ...state, backgroundWork: next };
-    }
-
-    case ActionType.ChatMovableChanged:
-      return { ...state, movable: action.movable };
-
-    case ActionType.ChatChangesetsChanged: {
-      const { changesets: _omit, ...stateWithoutChangesets } = state;
-      return action.changesets
-        ? { ...stateWithoutChangesets, changesets: action.changesets }
-        : stateWithoutChangesets;
-    }
-
-    case ActionType.ChatCanvasesChanged: {
-      const { canvases: _omit, ...stateWithoutCanvases } = state;
-      return action.canvases
-        ? { ...stateWithoutCanvases, canvases: action.canvases }
-        : stateWithoutCanvases;
-    }
 
     // ── Working Directories ───────────────────────────────────────────────
 
@@ -549,9 +442,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
         return {
           ...tc,
           ...(action._meta !== undefined ? { _meta: action._meta } : {}),
-          ...(action.content !== undefined
-            ? { partialInput: (tc.partialInput ?? '') + action.content }
-            : {}),
+          partialInput: (tc.partialInput ?? '') + action.content,
           invocationMessage: action.invocationMessage ?? tc.invocationMessage,
         };
       });
@@ -565,19 +456,13 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
         ) {
           return tc;
         }
-        const base = {
-          ...tcBaseWithMeta(tc, action._meta),
-          contributor: refineToolCallContributor(tc.contributor, action.contributor, log),
-          intention: action.intention ?? tc.intention,
-        };
-        const toolInput = action.toolInput
-          ?? (tc.status === ToolCallStatus.Streaming ? undefined : tc.toolInput);
+        const base = tcBaseWithMeta(tc, action._meta);
         if (action.confirmed) {
           return {
             status: ToolCallStatus.Running,
             ...base,
             invocationMessage: action.invocationMessage,
-            toolInput,
+            toolInput: action.toolInput,
             confirmed: action.confirmed,
           };
         }
@@ -587,7 +472,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
           status: ToolCallStatus.PendingConfirmation,
           ...base,
           invocationMessage: action.invocationMessage,
-          toolInput,
+          toolInput: action.toolInput ?? pending?.toolInput,
           confirmationTitle: action.confirmationTitle ?? pending?.confirmationTitle,
           riskAssessment: action.riskAssessment ?? pending?.riskAssessment,
           edits: action.edits ?? pending?.edits,
@@ -604,14 +489,11 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
         const base = tcBaseWithMeta(tc, action._meta);
         const selectedOption = resolveSelectedOption(tc.options, action.selectedOptionId);
         if (action.approved) {
-          const toolInput = action.editedToolInput !== undefined && typeof tc.toolInput === 'string'
-            ? action.editedToolInput
-            : tc.toolInput;
           return {
             status: ToolCallStatus.Running,
             ...base,
             invocationMessage: tc.invocationMessage,
-            toolInput,
+            toolInput: action.editedToolInput ?? tc.toolInput,
             confirmed: action.confirmed,
             ...(selectedOption ? { selectedOption } : {}),
           };
@@ -804,6 +686,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
         ...state,
         turns,
         activeTurn: undefined,
+        modifiedAt: new Date(Date.now()).toISOString(),
       };
       if (action.turnId === undefined) {
         delete next.turnsNextCursor;
@@ -859,6 +742,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
           ...activeTurn,
           responseParts,
         },
+        modifiedAt: new Date(Date.now()).toISOString(),
       };
     }
 
@@ -891,6 +775,7 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
       return {
         ...next,
         status: summaryStatus(next),
+        modifiedAt: new Date(Date.now()).toISOString(),
       };
     }
 
@@ -957,12 +842,6 @@ export function chatReducer(state: ChatState, action: ChatAction, log?: (msg: st
 
     case ActionType.ChatDraftChanged:
       return { ...state, draft: action.draft };
-
-    case ActionType.ChatIsReadChanged:
-      return { ...state, status: withStatusFlag(state.status, SessionStatus.IsRead, action.isRead) };
-
-    case ActionType.ChatIsArchivedChanged:
-      return { ...state, status: withStatusFlag(state.status, SessionStatus.IsArchived, action.isArchived) };
 
     default:
       softAssertNever(action, log);

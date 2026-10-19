@@ -14,9 +14,6 @@ import type { ChangesetState } from '../channels-changeset/state.js';
 import type { ResourceWatchState } from '../channels-resource-watch/state.js';
 import type { AnnotationsState } from '../channels-annotations/state.js';
 import type { ChatState } from '../channels-chat/state.js';
-import type { CanvasState } from '../channels-canvas/state.js';
-import type { AutomationState } from '../channels-automation/state.js';
-import type { AutomationRunState } from '../channels-automation-run/state.js';
 
 // ─── Type Aliases ────────────────────────────────────────────────────────────
 
@@ -115,6 +112,12 @@ export interface ProtectedResourceMetadata {
   /** OPTIONAL. JSON array of JWS signing algorithms supported. */
   resource_signing_alg_values_supported?: string[];
 
+  /** OPTIONAL. JSON array of JWE encryption algorithms (alg) supported. */
+  resource_encryption_alg_values_supported?: string[];
+
+  /** OPTIONAL. JSON array of JWE encryption algorithms (enc) supported. */
+  resource_encryption_enc_values_supported?: string[];
+
   /** OPTIONAL. URL of human-readable documentation for the resource. */
   resource_documentation?: string;
 
@@ -172,20 +175,6 @@ export interface ConfigPropertySchema {
   readOnly?: boolean;
   /** JSON Schema: schema for array items (used when `type` is `'array'`) */
   items?: ConfigPropertySchema;
-  /**
-   * JSON Schema: minimum number of array items (used when `type` is `'array'`)
-   *
-   * @integer
-   * @minimum 0
-   */
-  minItems?: number;
-  /**
-   * JSON Schema: maximum number of array items (used when `type` is `'array'`)
-   *
-   * @integer
-   * @minimum 0
-   */
-  maxItems?: number;
   /** JSON Schema: property descriptors for object properties (used when `type` is `'object'`) */
   properties?: Record<string, ConfigPropertySchema>;
   /** JSON Schema: list of required property ids (used when `type` is `'object'`) */
@@ -269,20 +258,6 @@ export interface ContentRef {
 
 // ─── File Edit ───────────────────────────────────────────────────────────────
 
-export interface FileEditSide {
-  /** URI of the file on this side of the edit */
-  uri: URI;
-  /** Reference to the file content on this side of the edit */
-  content: ContentRef;
-}
-
-export interface FileEditDiffStats {
-  /** Number of items added (e.g., lines for text files, cells for notebooks) */
-  added?: number;
-  /** Number of items removed (e.g., lines for text files, cells for notebooks) */
-  removed?: number;
-}
-
 /**
  * Describes a file modification with before/after state and diff metadata.
  *
@@ -293,15 +268,26 @@ export interface FileEditDiffStats {
  */
 export interface FileEdit {
   /** The file state before the edit. Absent for file creations or for in-place file edits. */
-  before?: FileEditSide;
+  before?: {
+    /** URI of the file before the edit */
+    uri: URI;
+    /** Reference to the file content before the edit */
+    content: ContentRef;
+  };
   /** The file state after the edit. Absent for file deletions. */
-  after?: FileEditSide;
+  after?: {
+    /** URI of the file after the edit */
+    uri: URI;
+    /** Reference to the file content after the edit */
+    content: ContentRef;
+  };
   /** Optional diff display metadata */
-  diff?: FileEditDiffStats;
-}
-
-export interface FileEditCollection {
-  items: FileEdit[];
+  diff?: {
+    /** Number of items added (e.g., lines for text files, cells for notebooks) */
+    added?: number;
+    /** Number of items removed (e.g., lines for text files, cells for notebooks) */
+    removed?: number;
+  };
 }
 
 // ─── Common Types ────────────────────────────────────────────────────────────
@@ -350,10 +336,10 @@ export interface ErrorInfo {
  * @category Common Types
  */
 export interface Snapshot {
-  /** The subscribed channel URI (e.g. `ahp-root://`, `ahp-session:/<uuid>`, `ahp-chat:/<uuid>`, or `ahp-canvas:/<uuid>`) */
+  /** The subscribed channel URI (e.g. `ahp-root://`, `ahp-session:/<uuid>`, or `ahp-chat:/<uuid>`) */
   resource: URI;
   /** The current state of the resource */
-  state: RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | CanvasState | AutomationState | AutomationRunState;
+  state: RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState;
   /** The `serverSeq` at which this snapshot was taken. Subsequent actions will have `serverSeq > fromSeq`. */
   fromSeq: number;
 }

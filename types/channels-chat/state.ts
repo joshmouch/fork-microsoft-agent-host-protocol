@@ -2,25 +2,15 @@
  * Chat State Types — Per-chat turns, messages, response parts, tool calls,
  * and elicitation/input requests exposed on `ahp-chat:` channels.
  *
- * Stability: 2 - Stable
- *
  * @module channels-chat/state
  */
 
 import type { ModelSelection } from '../channels-root/state.js';
-import type {
-  AgentSelection,
-  ChangesSummary,
-  McpAuthRequirement,
-  SessionStatus,
-} from '../channels-session/state.js';
-import type { Changeset } from '../channels-changeset/state.js';
-import type { CanvasReference } from '../channels-canvas/state.js';
+import type { AgentSelection, McpAuthRequirement, SessionStatus } from '../channels-session/state.js';
 import type {
   ContentRef,
   ErrorInfo,
   FileEdit,
-  FileEditCollection,
   StringOrMarkdown,
   TextRange,
   TextSelection,
@@ -57,23 +47,8 @@ export interface ChatState {
   activity?: string;
   /** Last modification timestamp (ISO 8601, e.g. `"2025-03-10T18:42:03.123Z"`) */
   modifiedAt: string;
-  /**
-   * Aggregate summary of file changes associated with this chat. Servers may
-   * populate this to give clients a quick at-a-glance view of the chat's
-   * footprint without requiring the client to subscribe to a changeset.
-   */
-  changes?: ChangesSummary;
   /** How this chat came into existence */
   origin?: ChatOrigin;
-  /**
-   * Whether this chat is eligible to be the source of `moveChat`, including
-   * same-session ordering.
-   *
-   * The host is authoritative. Absence means `false`. A `true` value does not
-   * guarantee that a particular request will succeed. A chat referenced by its
-   * owning session's `defaultChat` MUST NOT be movable.
-   */
-  movable?: boolean;
   /**
    * How the user can interact with this chat. See {@link ChatInteractivity}.
    *
@@ -97,35 +72,20 @@ export interface ChatState {
    */
   workingDirectories?: URI[];
   /**
-   * Catalogue of changesets the server can produce for this chat. Each entry
-   * advertises a subscribable view of file changes scoped to the chat's
-   * effective working directories and the URI template the client expands
-   * before subscribing. See {@link Changeset} for the full shape and
-   * {@link /guide/changesets | Changesets} for an overview of the model.
+   * The chat's primary working directory — the distinguished root this chat is
+   * centered on (e.g. the agent's process root for this chat, the default
+   * location for relative paths). MUST be one of this chat's effective working
+   * directories ({@link workingDirectories}, or the session's set when that is
+   * absent). Present when the agent advertises
+   * {@link MultipleWorkingDirectoriesCapability.requiresPrimary}.
    *
-   * This catalogue is intentionally absent from {@link ChatSummary}; clients
-   * obtain it by subscribing to the chat channel.
+   * **Read-only and fixed at creation.** It is set from
+   * {@link CreateChatParams.primaryWorkingDirectory} (or, for the session's
+   * default chat, {@link CreateSessionParams.primaryWorkingDirectory}) and does
+   * not change over the chat's lifetime — there is no action to mutate it, and
+   * it does not participate in `session/chatUpdated`.
    */
-  changesets?: Changeset[];
-  /**
-   * Work running in the background for this chat, such as shells and
-   * subagents. Only active work is listed: hosts remove an entry once the work
-   * ends. An entry may have been started by an earlier turn rather than the
-   * {@link ChatState.activeTurn | activeTurn}.
-   *
-   * Like {@link ChatState.changesets | changesets}, this is intentionally
-   * absent from {@link ChatSummary}; clients obtain it by subscribing to the
-   * chat channel.
-   */
-  backgroundWork?: BackgroundWork[];
-  /**
-   * Live canvases currently exposed by this chat.
-   *
-   * Entries intentionally contain only subscribable channel references.
-   * Clients subscribe to each resource for the experimental presentation
-   * state, including its current live source URL.
-   */
-  canvases?: CanvasReference[];
+  primaryWorkingDirectory?: URI;
 
   // ── Conversation contents ──────────────────────────────────────────
   /** Completed turns */
@@ -183,21 +143,8 @@ export interface ChatSummary {
   activity?: string;
   /** Last modification timestamp (ISO 8601, e.g. `"2025-03-10T18:42:03.123Z"`) */
   modifiedAt: string;
-  /**
-   * Aggregate summary of file changes associated with this chat. Servers may
-   * populate this to give clients a quick at-a-glance view of the chat's
-   * footprint without requiring the client to subscribe to a changeset.
-   */
-  changes?: ChangesSummary;
   /** How this chat came into existence */
   origin?: ChatOrigin;
-  /**
-   * Whether this chat is structurally eligible to be the source of
-   * `moveChat`. Absence means `false`.
-   *
-   * See {@link ChatState.movable} for the full semantics.
-   */
-  movable?: boolean;
   /**
    * How the user can interact with this chat. See {@link ChatInteractivity}.
    *
@@ -211,153 +158,30 @@ export interface ChatSummary {
    * See {@link ChatState.workingDirectories} for the full semantics.
    */
   workingDirectories?: URI[];
-}
-
-/**
- * Kind of {@link BackgroundWork}.
- *
- * This is a general/typological union (not a lifecycle), so the discriminant is
- * a `*Kind`.
- *
- * @category Background Work
- * @nonexhaustive
- */
-export const enum BackgroundWorkKind {
-  /** A shell command that continues after its initiating tool call returns. */
-  Shell = 'shell',
-  /** A subagent running in the background. */
-  Subagent = 'subagent',
-}
-
-/**
- * Fields common to every {@link BackgroundWork} variant.
- *
- * @category Background Work
- */
-interface BackgroundWorkBase {
   /**
-   * Identifier of this entry, unique within the owning chat across all kinds.
-   * The host derives it however it likes (for example from the kind plus the
-   * agent's own task id); consumers MUST treat it as opaque. It is the key for
-   * the `chat/backgroundWorkSet` / `chat/backgroundWorkRemoved` upsert
-   * convention.
+   * The chat's primary working directory.
+   * See {@link ChatState.primaryWorkingDirectory} for the full semantics.
    */
-  id: string;
-  /** Human-readable label, such as the command's purpose or the subagent's name. */
-  label: string;
-  /** ISO 8601 timestamp when the work started. */
-  startedAt: string;
-  /** Provider-specific metadata. */
-  _meta?: Record<string, unknown>;
+  primaryWorkingDirectory?: URI;
 }
-
-/**
- * A shell command continuing outside its initiating tool call. Covers shells
- * tied to the agent's lifetime (attached) and shells that outlive it
- * (detached). Whether a shell is attached is provider-specific and goes in its
- * `_meta`.
- *
- * @category Background Work
- */
-export interface BackgroundShellWork extends BackgroundWorkBase {
-  kind: BackgroundWorkKind.Shell;
-  /** Command line, displayed as plain text. */
-  command: string;
-  /**
-   * Terminal carrying this shell's output. Hosts SHOULD set this whenever they
-   * can show that output. Clients open it like
-   * {@link ToolResultTerminalContent.resource}; `isPty` on its
-   * {@link TerminalState} says whether the output is plain text.
-   */
-  terminal?: URI;
-}
-
-/**
- * A subagent running in the background. Its own state lives in its chat.
- *
- * @category Background Work
- */
-export interface BackgroundSubagentWork extends BackgroundWorkBase {
-  kind: BackgroundWorkKind.Subagent;
-  /**
-   * The subagent's chat: the same chat the spawning tool call's
-   * {@link ToolResultSubagentContent.resource} points to.
-   */
-  chat: URI;
-}
-
-/**
- * Work running in the background for a chat, such as a shell or a subagent.
- * Clients that don't recognize a `kind` should keep the entry and may render it
- * from the common fields.
- *
- * @category Background Work
- */
-export type BackgroundWork =
-  | BackgroundShellWork
-  | BackgroundSubagentWork;
 
 /**
  * Discriminant for {@link ChatOrigin} — how a chat came into existence.
  *
  * @category Chat State
- * @nonexhaustive
  */
 export const enum ChatOriginKind {
   /** User created the chat explicitly (e.g. via the host UI). */
   User = 'user',
   /** Forked from an existing chat at a specific turn. */
   Fork = 'fork',
-  /** Created as an independent side conversation from a specific turn. */
-  SideChat = 'sideChat',
   /** Spawned by a tool call running in another chat (e.g. a sub-agent delegation). */
   Tool = 'tool',
 }
 
 /**
- * Immutable selected-text snapshot captured when a side chat is created.
- *
- * The host records this exact text when it accepts `createChat`; later changes
- * to the source chat do not alter it.
- *
- * @category Chat State
- */
-export interface SideChatSelection {
-  /**
-   * Exact selected-text snapshot captured at `createChat` acceptance.
-   *
-   * MUST be non-empty.
-   */
-  text: string;
-  /**
-   * Optional provenance for the response part that contained {@link text} when
-   * the host took the snapshot.
-   *
-   * Advisory only: this is not a live range or offset and MUST NOT be used to
-   * recompute `text`.
-   */
-  responsePartId?: string;
-}
-
-/**
- * How a chat came into existence. Clients MAY use it to render creation
- * provenance (fork markers and "spawned by tool" badges). Any host-internal
- * hierarchy used to move a complete chat subtree is not exposed by AHP.
- *
- * Fork and side-chat origins both carry a stable top-level `turnId` alongside
- * their discriminated `kind` value instead of snapshotting whether that turn
- * was active or historical at creation time. Consumers resolve the identifier
- * against the
- * source chat's current `activeTurn` or retained `turns` as needed.
- *
- * When a host accepts side-chat creation from the source chat's current active
- * turn, it snapshots the retained history plus that turn's current user
- * message and any partial assistant response already available. Later
- * source-turn deltas do not retroactively change the created side chat's
- * starting context, and once the source turn completes it is still referenced
- * by the same `turnId`. Side-chat origins MAY also retain an immutable
- * {@link SideChatSelection | selected-text snapshot} captured at acceptance
- * time; any `responsePartId` there is provenance only, not a range.
+ * How a chat came into existence. Clients MAY use it to render
+ * contextual UI (parent indicators, fork markers, "spawned by tool" badges).
  *
  * The `tool` variant records a tool-spawned worker from the worker's side: its
  * `chat`/`toolCallId` identify the spawning tool call in the parent chat. This
@@ -370,7 +194,6 @@ export interface SideChatSelection {
 export type ChatOrigin =
   | { kind: ChatOriginKind.User }
   | { kind: ChatOriginKind.Fork; chat: URI; turnId: string }
-  | { kind: ChatOriginKind.SideChat; chat: URI; turnId: string; selection?: SideChatSelection }
   | { kind: ChatOriginKind.Tool; chat: URI; toolCallId: string };
 
 /**
@@ -386,7 +209,6 @@ export type ChatOrigin =
  * the UI uses it to show appropriate controls.
  *
  * @category Chat State
- * @exhaustive
  */
 export const enum ChatInteractivity {
   /** User can send messages and watch (default when absent) */
@@ -403,7 +225,6 @@ export const enum ChatInteractivity {
  * Discriminant for pending message kinds.
  *
  * @category Pending Message Types
- * @exhaustive
  */
 export const enum PendingMessageKind {
   /** Injected into the current turn at a convenient point */
@@ -435,7 +256,6 @@ export interface PendingMessage {
  * How a client completed an input request.
  *
  * @category Chat Input Types
- * @exhaustive
  */
 export const enum ChatInputResponseKind {
   Accept = 'accept',
@@ -447,7 +267,6 @@ export const enum ChatInputResponseKind {
  * Question/input control kind.
  *
  * @category Chat Input Types
- * @nonexhaustive
  */
 export const enum ChatInputQuestionKind {
   Text = 'text',
@@ -584,7 +403,6 @@ export interface ChatInputRequest {
  * Answer value kind.
  *
  * @category Chat Input Types
- * @nonexhaustive
  */
 export const enum ChatInputAnswerValueKind {
   Text = 'text',
@@ -653,7 +471,6 @@ export interface ChatInputSkipped {
  * Answer lifecycle state.
  *
  * @category Chat Input Types
- * @exhaustive
  */
 export const enum ChatInputAnswerState {
   Draft = 'draft',
@@ -675,7 +492,6 @@ export type ChatInputAnswer = ChatInputAnswered | ChatInputSkipped;
  * How a turn ended.
  *
  * @category Turn Types
- * @exhaustive
  */
 export const enum TurnState {
   Complete = 'complete',
@@ -687,7 +503,6 @@ export const enum TurnState {
  * Discriminant for {@link MessageAttachment} variants.
  *
  * @category Turn Types
- * @nonexhaustive
  */
 export const enum MessageAttachmentKind {
   /** A simple, opaque attachment whose representation is described by the producer. */
@@ -698,8 +513,6 @@ export const enum MessageAttachmentKind {
   Resource = 'resource',
   /** An attachment that references annotations on an annotations channel. */
   Annotations = 'annotations',
-  /** An attachment that references a bounded transcript from another chat. */
-  Chat = 'chat',
 }
 
 /**
@@ -727,6 +540,8 @@ export interface Turn {
   usage: UsageInfo | undefined;
   /** How the turn ended */
   state: TurnState;
+  /** Error details if state is `'error'` */
+  error?: ErrorInfo;
 }
 
 /**
@@ -755,7 +570,6 @@ export interface ActiveTurn {
  * Discriminant for {@link MessageOrigin} — identifies who produced a message.
  *
  * @category Turn Types
- * @nonexhaustive
  */
 export enum MessageKind {
   /** Sent directly by the user. */
@@ -770,8 +584,6 @@ export enum MessageKind {
    * worker chat whose first message carries a seed prompt.
    */
   Tool = 'tool',
-  /** Emitted automatically when an automation run starts a session. */
-  Automation = 'automation',
   /** A system-generated notification rather than a direct user message. */
   SystemNotification = 'systemNotification',
 }
@@ -790,8 +602,7 @@ export interface MessageOrigin {
 
 /**
  * A message that initiates or steers a turn. Messages can originate from the
- * user, the agent, a tool, an automation, or be system-generated (see
- * {@link MessageOrigin}).
+ * user, the agent, a tool, or be system-generated (see {@link MessageOrigin}).
  *
  * Attachments MAY be referenced inside {@link Message.text} via their
  * {@link MessageAttachmentBase.range} field. Attachments without a range are
@@ -965,42 +776,6 @@ export interface MessageAnnotationsAttachment extends MessageAttachmentBase {
 }
 
 /**
- * An attachment that references a chat transcript through a fixed completed
- * turn.
- *
- * The referenced chat MAY belong to a different session than the message's
- * chat. The attachment's model representation identifies the chat in a way
- * that hosts can resolve regardless of the session that owns it.
- *
- * When `endTurn` is omitted, the host MUST resolve and pin the referenced
- * chat's latest completed turn when accepting the message. This lets clients
- * attach a chat without knowing its turn identifiers. When provided, `endTurn`
- * MUST reference a completed, retained turn. The host resolves the transcript
- * from its first retained turn through the pinned turn, inclusive. Later turns
- * do not change the context represented by an already-sent attachment.
- *
- * When the referenced chat has no completed retained turns, the resolved
- * transcript is empty and hosts MUST NOT reject the attachment on that basis.
- *
- * Hosts MUST NOT recursively expand chat attachments found inside the
- * referenced transcript. Clients SHOULD keep rendering `label` if the
- * referenced chat is later pruned, and treat opening `resource` as best-effort.
- *
- * @category Turn Types
- */
-export interface MessageChatAttachment extends MessageAttachmentBase {
-  /** Discriminant */
-  type: MessageAttachmentKind.Chat;
-  /** URI of the referenced chat. */
-  resource: URI;
-  /**
-   * Last completed turn included in the referenced transcript. When omitted,
-   * the host pins the latest completed turn when accepting the message.
-   */
-  endTurn?: string;
-}
-
-/**
  * An attachment associated with a {@link Message}.
  *
  * @category Turn Types
@@ -1009,8 +784,7 @@ export type MessageAttachment =
   | SimpleMessageAttachment
   | MessageEmbeddedResourceAttachment
   | MessageResourceAttachment
-  | MessageAnnotationsAttachment
-  | MessageChatAttachment;
+  | MessageAnnotationsAttachment;
 
 // ─── Response Parts ──────────────────────────────────────────────────────────
 
@@ -1018,7 +792,6 @@ export type MessageAttachment =
  * Discriminant for response part types.
  *
  * @category Response Parts
- * @nonexhaustive
  */
 export const enum ResponsePartKind {
   Markdown = 'markdown',
@@ -1027,7 +800,6 @@ export const enum ResponsePartKind {
   Reasoning = 'reasoning',
   SystemNotification = 'systemNotification',
   InputRequest = 'inputRequest',
-  Error = 'error',
 }
 
 /**
@@ -1047,7 +819,7 @@ export interface MarkdownResponsePart {
  *
  * @category Response Parts
  */
-export interface ResourceResponsePart extends ContentRef {
+export interface ResourceReponsePart extends ContentRef {
   /** Discriminant */
   kind: ResponsePartKind.ContentRef;
 }
@@ -1087,12 +859,11 @@ export interface ReasoningResponsePart {
  */
 export type ResponsePart =
   | MarkdownResponsePart
-  | ResourceResponsePart
+  | ResourceReponsePart
   | ToolCallResponsePart
   | ReasoningResponsePart
   | SystemNotificationResponsePart
-  | InputRequestResponsePart
-  | ErrorResponsePart;
+  | InputRequestResponsePart;
 
 /**
  * A live or resolved input request (elicitation) in the turn response stream.
@@ -1121,28 +892,6 @@ export interface InputRequestResponsePart {
    * `decline`, or `cancel` with `chat/inputCompleted`.
    */
   response?: ChatInputResponseKind;
-}
-
-/**
- * An error encountered while processing a turn.
- *
- * This is the detailed source of truth for the error. {@link Turn.state}
- * remains {@link TurnState.Error} while the turn is stopped at this error so
- * clients can detect the terminal state without inspecting response parts.
- *
- * When {@link resumable} is `true`, a client may dispatch `chat/turnResume`
- * while this is the latest turn and its state is {@link TurnState.Error}.
- * Clients decide whether and how to present that affordance.
- *
- * @category Response Parts
- */
-export interface ErrorResponsePart {
-  /** Discriminant */
-  kind: ResponsePartKind.Error;
-  /** Error details. */
-  error: ErrorInfo;
-  /** Whether the host can resume the turn from this error. Only `true` enables resume. */
-  resumable?: boolean;
 }
 
 /**
@@ -1179,7 +928,6 @@ export interface SystemNotificationResponsePart {
  * Status of a tool call in the lifecycle state machine.
  *
  * @category Tool Call Types
- * @nonexhaustive
  */
 export const enum ToolCallStatus {
   Streaming = 'streaming',
@@ -1204,7 +952,6 @@ export const enum ToolCallStatus {
  * - `Setting` — Approved by a persistent user setting
  *
  * @category Tool Call Types
- * @nonexhaustive
  */
 export const enum ToolCallConfirmationReason {
   NotNeeded = 'not-needed',
@@ -1216,7 +963,6 @@ export const enum ToolCallConfirmationReason {
  * Identifies a model judge as the source of a confirmation requirement.
  *
  * @category Tool Call Types
- * @nonexhaustive
  */
 export const enum ToolCallRiskAssessmentKind {
   Judge = 'judge',
@@ -1226,7 +972,6 @@ export const enum ToolCallRiskAssessmentKind {
  * Lifecycle status of an asynchronous model-judge confirmation decision.
  *
  * @category Tool Call Types
- * @nonexhaustive
  */
 export const enum ToolCallRiskAssessmentStatus {
   Loading = 'loading',
@@ -1269,7 +1014,6 @@ export type ToolCallRiskAssessment =
  * Why a tool call was cancelled.
  *
  * @category Tool Call Types
- * @exhaustive
  */
 export const enum ToolCallCancellationReason {
   Denied = 'denied',
@@ -1281,7 +1025,6 @@ export const enum ToolCallCancellationReason {
  * Whether a confirmation option represents an approval or denial action.
  *
  * @category Tool Call Types
- * @nonexhaustive
  */
 export const enum ConfirmationOptionKind {
   Approve = 'approve',
@@ -1312,12 +1055,6 @@ export interface ConfirmationOption {
   group?: number;
 }
 
-/**
- * Identifies the source of a tool call's implementation.
- *
- * @category Tool Call Types
- * @nonexhaustive
- */
 export const enum ToolCallContributorKind {
   Client = 'client',
   MCP = 'mcp',
@@ -1386,23 +1123,9 @@ interface ToolCallBase {
 interface ToolCallParameterFields {
   /** Message describing what the tool will do */
   invocationMessage: StringOrMarkdown;
-  /**
-   * Final tool input.
-   *
-   * Referenced input is mutable until the tool call leaves
-   * `pending-confirmation`. When the client confirms with `editedToolInput`,
-   * the host MUST replace the resource contents before echoing the accepted
-   * confirmation action. Clients MUST NOT cache tool input across confirmation.
-   */
-  toolInput?: ToolInput;
+  /** Raw tool input */
+  toolInput?: string;
 }
-
-/**
- * Tool input represented inline or by reference.
- *
- * @category Tool Call Types
- */
-export type ToolInput = string | ContentRef;
 
 /**
  * Tool execution result details, available after execution completes.
@@ -1437,7 +1160,7 @@ export interface ToolCallResult {
  */
 export interface ToolCallStreamingState extends ToolCallBase {
   status: ToolCallStatus.Streaming;
-  /** Partial parameters accumulated from tool-call deltas. */
+  /** Partial parameters accumulated so far */
   partialInput?: string;
   /** Progress message shown while parameters are streaming */
   invocationMessage?: StringOrMarkdown;
@@ -1456,7 +1179,7 @@ export interface ToolCallPendingConfirmationState extends ToolCallBase, ToolCall
   /** Risk assessment that informed the confirmation requirement. */
   riskAssessment?: ToolCallRiskAssessment;
   /** File edits that this tool call will perform, for preview before confirmation */
-  edits?: FileEditCollection;
+  edits?: { items: FileEdit[] };
   /** Whether the agent host allows the client to edit the tool's input parameters before confirming */
   editable?: boolean;
   /**
@@ -1622,7 +1345,6 @@ export type ToolCallConfirmationState =
  * Discriminant for tool result content types.
  *
  * @category Tool Result Content
- * @nonexhaustive
  */
 export const enum ToolResultContentType {
   Text = 'text',
@@ -1630,6 +1352,7 @@ export const enum ToolResultContentType {
   Resource = 'resource',
   FileEdit = 'fileEdit',
   Terminal = 'terminal',
+  TerminalComplete = 'terminalComplete',
   Subagent = 'subagent',
 }
 
@@ -1685,50 +1408,44 @@ export interface ToolResultFileEditContent extends FileEdit {
  * A reference to a terminal whose output is relevant to this tool result.
  *
  * Clients can subscribe to the terminal's URI to stream its output in real
- * time, providing live feedback while a tool is executing. The same URI
- * remains subscribable for historical results: when the referenced resource's
- * lifecycle is `exited`, subscribing returns an exited {@link TerminalState}
- * containing the retained terminal content. Servers may reconstruct that state
- * lazily and do not need to retain a live terminal process.
- *
- * When the command exits, {@link result} is filled in on the completed
- * result, retaining the outcome for clients that did not subscribe. This
- * records the command's exit, not the terminal's — the terminal may keep
- * running afterwards.
+ * time, providing live feedback while a tool is executing.
  *
  * @category Tool Result Content
  */
 export interface ToolResultTerminalContent {
   type: ToolResultContentType.Terminal;
-  /** Terminal URI (subscribable for live or retained terminal state) */
+  /** Terminal URI (subscribable for full terminal state) */
   resource: URI;
   /** Display title for the terminal content */
   title: string;
-  /**
-   * Whether this terminal-style resource is backed by a pseudoterminal.
-   * When `false`, output is plain text and clients do not need to parse
-   * VT sequences.
-   */
-  isPty?: boolean;
-  /** Outcome of the command, present once it has exited. */
-  result?: TerminalCommandResult;
 }
 
 /**
- * Outcome of a command run in a terminal-style tool, filled in on
- * {@link ToolResultTerminalContent.result} once the command exits.
+ * Record of a command executed by a terminal-style tool (e.g. a shell tool),
+ * appended to the tool result when the command exits.
+ *
+ * This records the command's exit, not the terminal's — the terminal may
+ * keep running afterwards.
+ *
+ * When live output was exposed through a terminal channel (a
+ * {@link ToolResultTerminalContent} block in the same tool result),
+ * {@link resource} identifies that channel; otherwise this block stands alone
+ * as the retained command result.
  *
  * @category Tool Result Content
  */
-export interface TerminalCommandResult {
+export interface ToolResultTerminalCompleteContent {
+  type: ToolResultContentType.TerminalComplete;
+  /**
+   * URI of the `ahp-terminal:` channel that carried live output for this
+   * command, if one was exposed.
+   */
+  resource?: URI;
   /** Exit code from the completed command, if reported by the runtime */
   exitCode?: number;
-  /**
-   * Preview of the command's output, for clients that are not subscribed
-   * to the terminal or that arrive after it is disposed. When `isPty` is
-   * `true` the preview may contain VT sequences; when `false` it is plain
-   * text.
-   */
+  /** Working directory where the command was executed */
+  cwd?: URI;
+  /** Preview of the command's output, if available */
   preview?: string;
   /** Whether `preview` is known to be incomplete or truncated */
   truncated?: boolean;
@@ -1762,8 +1479,8 @@ export interface ToolResultSubagentContent {
  * Mirrors the content blocks in MCP `CallToolResult.content`, plus
  * `ToolResultResourceContent` for lazy-loading large results,
  * `ToolResultFileEditContent` for file edit diffs,
- * `ToolResultTerminalContent` for live terminal output and
- * command completion metadata, and
+ * `ToolResultTerminalContent` for live terminal output,
+ * `ToolResultTerminalCompleteContent` for terminal-style completion metadata, and
  * `ToolResultSubagentContent` for tool-spawned worker chats (AHP extensions).
  *
  * @category Tool Result Content
@@ -1774,4 +1491,5 @@ export type ToolResultContent =
   | ToolResultResourceContent
   | ToolResultFileEditContent
   | ToolResultTerminalContent
+  | ToolResultTerminalCompleteContent
   | ToolResultSubagentContent;

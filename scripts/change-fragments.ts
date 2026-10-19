@@ -1,15 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 
-export const CHANGELOG_TARGETS = [
-  'spec',
-  'rust',
-  'kotlin',
-  'typescript',
-  'swift',
-  'go',
-  'dotnet',
-] as const;
+export const CHANGELOG_TARGETS = ['spec', 'rust', 'kotlin', 'typescript', 'swift', 'go'] as const;
 export type ChangelogTarget = (typeof CHANGELOG_TARGETS)[number];
 
 export const CHANGE_TYPES = ['added', 'changed', 'deprecated', 'removed', 'fixed', 'security'] as const;
@@ -63,8 +55,6 @@ export function changelogPathForTarget(target: ChangelogTarget, rootDir: string)
       return path.join(rootDir, 'clients', 'swift', 'CHANGELOG.md');
     case 'go':
       return path.join(rootDir, 'clients', 'go', 'CHANGELOG.md');
-    case 'dotnet':
-      return path.join(rootDir, 'clients', 'dotnet', 'CHANGELOG.md');
   }
 }
 

@@ -28,18 +28,12 @@ interface JsonSchema {
   type?: string;
   properties?: Record<string, JsonSchema>;
   required?: string[];
-  additionalProperties?: boolean | JsonSchema;
+  additionalProperties?: boolean;
   items?: JsonSchema;
-  contains?: JsonSchema;
-  minContains?: number;
-  maxContains?: number;
   enum?: Array<string | number | boolean>;
   const?: string | number | boolean;
-  minimum?: number;
   oneOf?: JsonSchema[];
-  allOf?: JsonSchema[];
   anyOf?: JsonSchema[];
-  not?: JsonSchema;
   $ref?: string;
   $defs?: Record<string, JsonSchema>;
 }
@@ -57,65 +51,6 @@ function getPropertyDescription(prop: PropertySignature): string {
   const jsDocs = prop.getJsDocs();
   if (jsDocs.length === 0) return '';
   return normalizeDescription(jsDocs[0].getDescription());
-}
-
-function hasPropertyTag(prop: PropertySignature, tagName: string): boolean {
-  return prop.getJsDocs()
-    .flatMap(doc => doc.getTags())
-    .some(tag => tag.getTagName() === tagName);
-}
-
-function getNumericPropertyTag(prop: PropertySignature, tagName: string): number | undefined {
-  const tag = prop.getJsDocs()
-    .flatMap(doc => doc.getTags())
-    .find(candidate => candidate.getTagName() === tagName);
-  if (!tag) return undefined;
-
-  const text = tag.getCommentText()?.trim();
-  const value = text === undefined ? Number.NaN : Number(text);
-  if (!Number.isFinite(value)) {
-    throw new Error(
-      `${prop.getSourceFile().getFilePath()}: ${prop.getName()} has invalid @${tagName} value ${JSON.stringify(text)}`,
-    );
-  }
-  return value;
-}
-
-function getUniqueItemsByConstraints(prop: PropertySignature): JsonSchema[] | undefined {
-  const tag = prop.getJsDocs()
-    .flatMap(doc => doc.getTags())
-    .find(candidate => candidate.getTagName() === 'uniqueItemsBy');
-  if (!tag) return undefined;
-
-  const key = tag.getCommentText()?.trim();
-  const itemType = prop.getType().getNonNullableType().getArrayElementType();
-  if (!key || !itemType) {
-    throw new Error(
-      `${prop.getSourceFile().getFilePath()}: ${prop.getName()} requires an array and a discriminant for @uniqueItemsBy`,
-    );
-  }
-  const variants = itemType.isUnion() ? itemType.getUnionTypes() : [itemType];
-  const values = variants.map(variant => {
-    const discriminant = variant.getProperty(key);
-    const value = discriminant?.getTypeAtLocation(prop).getLiteralValue();
-    if (!discriminant || discriminant.isOptional() || (typeof value !== 'string' && typeof value !== 'number')) {
-      throw new Error(
-        `${prop.getSourceFile().getFilePath()}: ${prop.getName()} @uniqueItemsBy ${key} requires a required literal discriminant on every array variant`,
-      );
-    }
-    return value;
-  });
-
-  // uniqueItems compares whole objects; count each discriminant instead.
-  return [...new Set(values)].map(value => ({
-    contains: {
-      type: 'object',
-      properties: { [key]: { const: value } },
-      required: [key],
-    },
-    minContains: 0,
-    maxContains: 1,
-  }));
 }
 
 function getInterfaceDescription(node: InterfaceDeclaration): string {
@@ -268,9 +203,7 @@ function typeTextToSchema(typeText: string, project: Project, _depth = 0): JsonS
   if (cleaned.includes('|') && !cleaned.startsWith("'")) {
     const parts = splitUnionType(cleaned).filter(p => p !== 'undefined' && p !== '');
     if (parts.length > 1) {
-      return {
-        oneOf: parts.map(p => typeTextToSchema(p, project, _depth + 1)),
-      };
+      return { oneOf: parts.map(p => typeTextToSchema(p, project, _depth + 1)) };
     }
     if (parts.length === 1 && parts[0] !== cleaned) {
       return typeTextToSchema(parts[0], project, _depth + 1);
@@ -281,14 +214,20 @@ function typeTextToSchema(typeText: string, project: Project, _depth = 0): JsonS
   // value as a `const`. Without this the capitalized-identifier fallback below
   // emits a `$ref` to `#/$defs/ActionType.ChatTurnStarted` that is never
   // defined (dangling). Must run before the interface-reference fallback.
-  const enumMemberSchema = enumMemberToSchema(cleaned, project);
-  if (enumMemberSchema) {
-    return enumMemberSchema;
+  const enumMemberMatch = cleaned.match(/^([A-Z]\w*)\.(\w+)$/);
+  if (enumMemberMatch) {
+    const [, enumName, memberName] = enumMemberMatch;
+    const en = findEnum(project, enumName);
+    const member = en?.getMember(memberName);
+    const value = member?.getValue();
+    if (value !== undefined) {
+      return { const: value };
+    }
   }
 
   // Inline object: { message: string; code?: string }
   if (cleaned.startsWith('{') && cleaned.endsWith('}')) {
-    return inlineObjectToSchema(cleaned, project);
+    return inlineObjectToSchema(cleaned);
   }
 
   // Interface references: check if it's a known interface
@@ -304,14 +243,8 @@ function splitUnionType(typeText: string): string[] {
   let depth = 0;
   let current = '';
   for (const char of typeText) {
-    // Track every bracket pair so a `|` nested inside a generic argument
-    // (`Array<A | B>`), a parenthesised union, an inline object
-    // (`{ a: A | B }`) or a tuple (`[A | B]`) is not mistaken for a
-    // top-level union separator. `[`/`]` matter for callers that consume the
-    // split parts as type names — `typeTextToSchema`'s `oneOf` generation
-    // would otherwise emit `[A` and `B]` as two branches of a tuple type.
-    if (char === '<' || char === '(' || char === '{' || char === '[') depth++;
-    else if (char === '>' || char === ')' || char === '}' || char === ']') depth--;
+    if (char === '<' || char === '(' || char === '{') depth++;
+    else if (char === '>' || char === ')' || char === '}') depth--;
     else if (char === '|' && depth === 0) {
       parts.push(current.trim());
       current = '';
@@ -323,44 +256,7 @@ function splitUnionType(typeText: string): string[] {
   return parts;
 }
 
-/**
- * Whether a declared property type admits `undefined` — i.e. it is written as
- * an explicit `T | undefined` union rather than with a `?` question token.
- *
- * Only a **top-level** union member counts: `A | undefined` does, while a
- * nested `Array<A | undefined>` does not, since the property itself is still
- * always present.
- *
- * The protocol uses `T | undefined` (instead of `T?`) for fields whose "cleared"
- * state is semantically meaningful, so that a producer constructing the object
- * literal in TypeScript is forced to mention the key and consciously decide
- * between a value and a clear. That is purely an authoring-time constraint: at
- * runtime `JSON.stringify` drops `undefined` members, so such a field is
- * **absent** on the wire exactly like an optional one, and every language
- * generator emits it as optional (`Option<T>` + `skip_serializing_if`,
- * `*T` + `omitempty`, `T? = null`).
- *
- * The emitted JSON Schema therefore MUST NOT list these properties as
- * `required`, or it would reject the very messages the clients produce.
- *
- * Exported so the schema tests classify properties with exactly the same rule
- * the generator applies, rather than duplicating the logic in a second place
- * where the two could drift apart.
- */
-export function typeAdmitsUndefined(typeText: string): boolean {
-  return splitUnionType(typeText.trim()).some(part => part === 'undefined');
-}
-
-function enumMemberToSchema(typeText: string, project: Project): JsonSchema | undefined {
-  const match = typeText.match(/^([A-Z]\w*)\.(\w+)$/);
-  if (!match) return undefined;
-
-  const [, enumName, memberName] = match;
-  const value = findEnum(project, enumName)?.getMember(memberName)?.getValue();
-  return value === undefined ? undefined : { const: value };
-}
-
-function inlineObjectToSchema(text: string, project: Project): JsonSchema {
+function inlineObjectToSchema(text: string): JsonSchema {
   // Parse { key: type; key?: type } style, stripping any JSDoc/block comments
   const cleaned = text.replace(/\/\*[\s\S]*?\*\//g, '');
   const inner = cleaned.slice(cleaned.indexOf('{') + 1, cleaned.lastIndexOf('}')).trim();
@@ -371,9 +267,8 @@ function inlineObjectToSchema(text: string, project: Project): JsonSchema {
     const match = field.match(/^(\w+)(\?)?:\s*(.+)$/);
     if (match) {
       const [, name, optional, type] = match;
-      const fieldType = type.trim();
-      schema.properties![name] = typeTextToSchema(fieldType, project);
-      if (!optional && !typeAdmitsUndefined(fieldType)) {
+      schema.properties![name] = { type: mapSimpleType(type.trim()) };
+      if (!optional) {
         schema.required!.push(name);
       }
     }
@@ -381,6 +276,13 @@ function inlineObjectToSchema(text: string, project: Project): JsonSchema {
 
   if (schema.required!.length === 0) delete schema.required;
   return schema;
+}
+
+function mapSimpleType(t: string): string {
+  if (t === 'string') return 'string';
+  if (t === 'number') return 'number';
+  if (t === 'boolean') return 'boolean';
+  return 'string'; // fallback
 }
 
 // ─── Interface → JSON Schema ─────────────────────────────────────────────────
@@ -399,29 +301,8 @@ function interfaceToSchema(iface: InterfaceDeclaration, project: Project): JsonS
     const desc = getPropertyDescription(prop);
     const propSchema = typeTextToSchema(typeText, project);
     if (desc) propSchema.description = desc;
-    if (hasPropertyTag(prop, 'integer')) {
-      if (propSchema.type !== 'number') {
-        throw new Error(
-          `${prop.getSourceFile().getFilePath()}: ${name} uses @integer on ${typeText}`,
-        );
-      }
-      propSchema.type = 'integer';
-    }
-    const minimum = getNumericPropertyTag(prop, 'minimum');
-    if (minimum !== undefined) {
-      if (propSchema.type !== 'number' && propSchema.type !== 'integer') {
-        throw new Error(
-          `${prop.getSourceFile().getFilePath()}: ${name} uses a numeric schema constraint on ${typeText}`,
-        );
-      }
-      propSchema.minimum = minimum;
-    }
-    const uniqueItemsBy = getUniqueItemsByConstraints(prop);
-    if (uniqueItemsBy) {
-      propSchema.allOf = uniqueItemsBy;
-    }
     schema.properties![name] = propSchema;
-    if (!prop.hasQuestionToken() && !typeAdmitsUndefined(typeText)) {
+    if (!prop.hasQuestionToken()) {
       if (!schema.required!.includes(name)) {
         schema.required!.push(name);
       }
@@ -602,20 +483,6 @@ function generateCommandsSchema(project: Project): JsonSchema {
     schema.$defs![name] = interfaceToSchema(iface, project);
   }
 
-  // Add command type aliases (e.g. ChatSource and ChatMoveDestination).
-  for (const commandSf of findProtocolSourceFiles(project, 'commands.ts')) {
-    for (const ta of commandSf.getTypeAliases()) {
-      const name = ta.getName();
-      const typeText = ta.getTypeNode()?.getText() || '';
-      schema.$defs![name] = typeTextToSchema(typeText, project);
-      const rawDesc = ta.getJsDocs()[0]?.getDescription();
-      const desc = rawDesc ? normalizeDescription(rawDesc) : '';
-      if (desc) {
-        schema.$defs![name].description = desc;
-      }
-    }
-  }
-
   // Add referenced types from state.ts and actions.ts
   for (const file of ['state.ts', 'actions.ts']) {
     const ifaces = collectInterfacesFromFile(project, file);
@@ -678,7 +545,7 @@ function generateErrorsSchema(project: Project): JsonSchema {
       AhpErrorCode: {
         description: 'AHP application-specific error codes.',
         type: 'number',
-        enum: [-32001, -32002, -32003, -32004, -32005, -32007, -32008, -32009, -32010, -32011],
+        enum: [-32001, -32002, -32003, -32004, -32005, -32006, -32007, -32008, -32009, -32010],
       },
     },
   };
@@ -713,7 +580,6 @@ function collectRefTargets(node: JsonSchema | undefined, acc: Set<string>): void
     if (m) acc.add(m[1]);
   }
   if (node.items) collectRefTargets(node.items, acc);
-  if (node.contains) collectRefTargets(node.contains, acc);
   if (node.additionalProperties && typeof node.additionalProperties === 'object') {
     collectRefTargets(node.additionalProperties as JsonSchema, acc);
   }
@@ -723,10 +589,7 @@ function collectRefTargets(node: JsonSchema | undefined, acc: Set<string>): void
   if (node.$defs) {
     for (const key of Object.keys(node.$defs)) collectRefTargets(node.$defs[key], acc);
   }
-  if (node.not) {
-    collectRefTargets(node.not, acc);
-  }
-  for (const branch of [node.oneOf, node.allOf, node.anyOf]) {
+  for (const branch of [node.oneOf, node.anyOf]) {
     if (branch) for (const b of branch) collectRefTargets(b, acc);
   }
 }

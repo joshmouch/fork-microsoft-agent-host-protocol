@@ -1,5 +1,5 @@
 {
-  "description": "session/inputNeededSet replaces an existing entry with the same id, and swapping a confirmation for a client execution drops status back to InProgress",
+  "description": "session/inputNeededSet replaces an existing entry with the same id and keeps status InputNeeded",
   "reducer": "session",
   "initial": {
     "provider": "copilot",
@@ -48,7 +48,7 @@
   "expected": {
     "provider": "copilot",
     "title": "Test Session",
-    "status": 8,
+    "status": 24,
     "lifecycle": "ready",
     "activeClients": [],
     "chats": [],

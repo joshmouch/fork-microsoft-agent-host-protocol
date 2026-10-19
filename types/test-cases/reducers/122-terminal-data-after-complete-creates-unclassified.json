@@ -19,10 +19,7 @@
       "kind": "client",
       "clientId": "c1"
     },
-    "supportsCommandDetection": true,
-    "lifecycle": {
-      "status": "running"
-    }
+    "supportsCommandDetection": true
   },
   "actions": [
     {
@@ -52,9 +49,6 @@
       "kind": "client",
       "clientId": "c1"
     },
-    "supportsCommandDetection": true,
-    "lifecycle": {
-      "status": "running"
-    }
+    "supportsCommandDetection": true
   }
 }

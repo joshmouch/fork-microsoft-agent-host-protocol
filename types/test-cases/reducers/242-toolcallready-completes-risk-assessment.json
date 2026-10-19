@@ -24,9 +24,7 @@
             "contributor": null,
             "_meta": null,
             "invocationMessage": "Checking command safety",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "rm -rf /tmp/test",
             "confirmationTitle": "Run in terminal",
             "riskAssessment": {
               "kind": "judge",
@@ -90,9 +88,7 @@
             "contributor": null,
             "_meta": null,
             "invocationMessage": "Run: rm -rf /tmp/test",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "rm -rf /tmp/test",
             "confirmationTitle": "Run in terminal",
             "riskAssessment": {
               "kind": "judge",

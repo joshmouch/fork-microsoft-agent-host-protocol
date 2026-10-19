@@ -22,9 +22,7 @@
             "displayName": "Run Command",
             "intention": null,
             "invocationMessage": "Running command",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "ls -la",
             "confirmed": "user-action"
           }
         }
@@ -67,15 +65,14 @@
               "contributor": null,
               "_meta": null,
               "invocationMessage": "Running command",
-              "toolInput": {
-                "uri": "file:///tool-inputs/tool-input.json"
-              },
+              "toolInput": "ls -la",
               "reason": "skipped"
             }
           }
         ],
         "usage": null,
-        "state": "complete"
+        "state": "complete",
+        "error": null
       }
     ],
     "activeTurn": null,

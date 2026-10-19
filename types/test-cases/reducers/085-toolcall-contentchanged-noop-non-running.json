@@ -22,9 +22,7 @@
             "displayName": "Run Command",
             "intention": null,
             "invocationMessage": "Ran command",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "ls -la",
             "confirmed": "user-action",
             "success": true,
             "pastTenseMessage": "Ran command"
@@ -73,9 +71,7 @@
             "displayName": "Run Command",
             "intention": null,
             "invocationMessage": "Ran command",
-            "toolInput": {
-              "uri": "file:///tool-inputs/tool-input.json"
-            },
+            "toolInput": "ls -la",
             "confirmed": "user-action",
             "success": true,
             "pastTenseMessage": "Ran command"

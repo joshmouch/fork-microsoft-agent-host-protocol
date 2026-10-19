@@ -11,7 +11,7 @@
  * Run: npx tsx --test types/reducers.test.ts
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -21,21 +21,17 @@ import {
   rootReducer,
   sessionReducer,
   chatReducer,
-  canvasReducer,
   terminalReducer,
   changesetReducer,
   annotationsReducer,
   resourceWatchReducer,
-  automationReducer,
-  automationRunReducer,
   isClientDispatchable,
 } from './reducers.js';
 import { IS_CLIENT_DISPATCHABLE } from './action-origin.generated.js';
 import { ActionType } from './actions.js';
-import type { RootState, SessionState, ChatState, CanvasState, TerminalState, ChangesetState, AnnotationsState, ResourceWatchState, AutomationState, AutomationRunState } from './state.js';
+import type { RootState, SessionState, ChatState, TerminalState, ChangesetState, AnnotationsState, ResourceWatchState } from './state.js';
 import {
   SessionStatus,
-  SessionLifecycle,
   TurnState,
   MessageKind,
 } from './state.js';
@@ -54,13 +50,10 @@ function readChannelSources(baseName: string): string {
     'channels-root',
     'channels-session',
     'channels-chat',
-    'channels-canvas',
     'channels-terminal',
     'channels-changeset',
     'channels-annotations',
     'channels-resource-watch',
-    'channels-automation',
-    'channels-automation-run',
   ];
   return dirs
     .map(dir => {
@@ -76,11 +69,11 @@ function readChannelSources(baseName: string): string {
 
 // ─── Fixture Loading ─────────────────────────────────────────────────────────
 
-type FixtureState = RootState | SessionState | ChatState | CanvasState | TerminalState | ChangesetState | AnnotationsState | ResourceWatchState | AutomationState | AutomationRunState;
+type FixtureState = RootState | SessionState | ChatState | TerminalState | ChangesetState | AnnotationsState | ResourceWatchState;
 
 interface Fixture {
   description: string;
-  reducer: 'root' | 'session' | 'chat' | 'canvas' | 'terminal' | 'changeset' | 'annotations' | 'resourceWatch' | 'automation' | 'automationRun';
+  reducer: 'root' | 'session' | 'chat' | 'terminal' | 'changeset' | 'annotations' | 'resourceWatch';
   initial: FixtureState;
   actions: unknown[];
   expected: FixtureState;
@@ -113,7 +106,24 @@ const fixtures: Fixture[] = fixtureFiles.map(f => {
 
 // ─── Fixture-Driven Reducer Tests ────────────────────────────────────────────
 
+/**
+ * The reducers call Date.now() for modifiedAt timestamps.
+ * We mock it to a fixed value (9999) matching what was used during
+ * fixture generation, so expected values match exactly.
+ */
+const MOCK_NOW = 9999;
+let originalDateNow: typeof Date.now;
+
 describe('reducer fixtures', () => {
+  beforeEach(() => {
+    originalDateNow = Date.now;
+    Date.now = () => MOCK_NOW;
+  });
+
+  afterEach(() => {
+    Date.now = originalDateNow;
+  });
+
   for (const fixture of fixtures) {
     it(fixture.description, () => {
       let state = fixture.initial;
@@ -122,8 +132,6 @@ describe('reducer fixtures', () => {
           state = rootReducer(state as RootState, action as any);
         } else if (fixture.reducer === 'chat') {
           state = chatReducer(state as ChatState, action as any);
-        } else if (fixture.reducer === 'canvas') {
-          state = canvasReducer(state as CanvasState, action as any);
         } else if (fixture.reducer === 'terminal') {
           state = terminalReducer(state as TerminalState, action as any);
         } else if (fixture.reducer === 'changeset') {
@@ -132,10 +140,6 @@ describe('reducer fixtures', () => {
           state = annotationsReducer(state as AnnotationsState, action as any);
         } else if (fixture.reducer === 'resourceWatch') {
           state = resourceWatchReducer(state as ResourceWatchState, action as any);
-        } else if (fixture.reducer === 'automation') {
-          state = automationReducer(state as AutomationState, action as any);
-        } else if (fixture.reducer === 'automationRun') {
-          state = automationRunReducer(state as AutomationRunState, action as any);
         } else {
           state = sessionReducer(state as SessionState, action as any);
         }
@@ -214,49 +218,6 @@ describe('isClientDispatchable', () => {
   it('returns false for server-only actions', () => {
     const action = { type: ActionType.SessionReady, session: 'x' } as const;
     assert.equal(isClientDispatchable(action), false);
-  });
-});
-
-describe('chat read state scoping', () => {
-  it('changes the default chat without changing its owning session or sibling chat', () => {
-    const defaultChat: ChatState = {
-      resource: 'ahp-chat:/default',
-      title: 'Default Chat',
-      status: SessionStatus.Idle,
-      modifiedAt: '2026-10-02T00:00:00.000Z',
-      turns: [],
-    };
-    const siblingChat: ChatState = {
-      resource: 'ahp-chat:/sibling',
-      title: 'Sibling Chat',
-      status: SessionStatus.Idle,
-      modifiedAt: '2026-10-02T00:00:00.000Z',
-      turns: [],
-    };
-    const session: SessionState = {
-      provider: 'copilot',
-      title: 'Session',
-      status: SessionStatus.Idle | SessionStatus.IsRead,
-      lifecycle: SessionLifecycle.Ready,
-      activeClients: [],
-      chats: [defaultChat, siblingChat],
-      defaultChat: defaultChat.resource,
-    };
-
-    const updatedDefaultChat = chatReducer(defaultChat, {
-      type: ActionType.ChatIsReadChanged,
-      isRead: true,
-    });
-
-    assert.deepStrictEqual({
-      defaultChatStatus: updatedDefaultChat.status,
-      owningSessionStatus: session.status,
-      siblingChatStatus: siblingChat.status,
-    }, {
-      defaultChatStatus: SessionStatus.Idle | SessionStatus.IsRead,
-      owningSessionStatus: SessionStatus.Idle | SessionStatus.IsRead,
-      siblingChatStatus: SessionStatus.Idle,
-    });
   });
 });
 

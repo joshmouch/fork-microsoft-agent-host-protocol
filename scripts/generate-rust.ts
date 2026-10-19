@@ -22,10 +22,6 @@ import fs from 'fs';
 import path from 'path';
 import { findProtocolSourceFiles } from './find-protocol-sources.js';
 import { readProtocolVersions } from './read-protocol-versions.js';
-import {
-  discriminatedUnionAllowsUnknown,
-  getEnumCompatibility,
-} from './enum-compatibility.js';
 
 const GENERATED_BANNER = '// Generated from types/*.ts — do not edit.\n//\n// Regenerate with: npm run generate:rust\n\n#![allow(missing_docs)]\n';
 
@@ -149,7 +145,6 @@ function mapType(tsType: string, propName?: string, containerName?: string): str
 
   if (tsType === 'URI') return 'Uri';
   if (tsType === 'StringOrMarkdown') return 'StringOrMarkdown';
-  if (tsType === 'ToolInput') return 'ToolInput';
 
   // ChildCustomizationType is a TS-only subset alias of CustomizationType.
   if (tsType === 'ChildCustomizationType') return 'CustomizationType';
@@ -163,8 +158,6 @@ function mapType(tsType: string, propName?: string, containerName?: string): str
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | AnnotationsState'
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState'
     || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState'
-    || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | AutomationState | AutomationRunState'
-    || tsType === 'RootState | SessionState | TerminalState | ChangesetState | ResourceWatchState | AnnotationsState | ChatState | CanvasState | AutomationState | AutomationRunState'
     || tsType === 'RootState | SessionState | ChatState'
     || tsType === 'RootState | SessionState | ChatState | TerminalState'
     || tsType === 'RootState | SessionState | ChatState | TerminalState | ChangesetState'
@@ -477,7 +470,6 @@ function generateRustEnum(enumDecl: EnumDeclaration): string {
   const desc = enumDecl.getJsDocs()[0]?.getDescription().trim();
   const values = enumDecl.getMembers().map(m => m.getValue());
   const isNumeric = values.every(v => typeof v === 'number');
-  const isNonexhaustive = getEnumCompatibility(enumDecl) === 'nonexhaustive';
 
   if (desc) {
     for (const d of desc.split('\n')) {
@@ -485,57 +477,7 @@ function generateRustEnum(enumDecl: EnumDeclaration): string {
     }
   }
 
-  if (isNonexhaustive) {
-    const rawType = isNumeric ? 'i64' : 'String';
-    lines.push('#[derive(Debug, Clone, PartialEq, Eq, Hash)]');
-    lines.push(`pub enum ${name} {`);
-    for (const mem of enumDecl.getMembers()) {
-      const doc = mem.getJsDocs()[0]?.getDescription().trim();
-      if (doc) {
-        for (const d of doc.split('\n')) lines.push(`    /// ${d.trimEnd()}`);
-      }
-      lines.push(`    ${mem.getName()},`);
-    }
-    lines.push(`    /// Unknown raw value from a newer protocol version, preserved verbatim.`);
-    lines.push(`    Unknown(${rawType}),`);
-    lines.push('}');
-    lines.push('');
-    lines.push(`impl serde::Serialize for ${name} {`);
-    lines.push('    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>');
-    lines.push('    where S: serde::Serializer {');
-    lines.push('        match self {');
-    for (const mem of enumDecl.getMembers()) {
-      const value = mem.getValue();
-      const serialized = isNumeric ? `serializer.serialize_i64(${value})` : `serializer.serialize_str(${JSON.stringify(String(value))})`;
-      lines.push(`            Self::${mem.getName()} => ${serialized},`);
-    }
-    lines.push(`            Self::Unknown(value) => ${isNumeric ? 'serializer.serialize_i64(*value)' : 'serializer.serialize_str(value)'},`);
-    lines.push('        }');
-    lines.push('    }');
-    lines.push('}');
-    lines.push('');
-    lines.push(`impl<'de> serde::Deserialize<'de> for ${name} {`);
-    lines.push('    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>');
-    lines.push('    where D: serde::Deserializer<\'de> {');
-    lines.push(`        let raw = <${rawType} as serde::Deserialize>::deserialize(deserializer)?;`);
-    if (isNumeric) {
-      lines.push('        Ok(match raw {');
-      for (const mem of enumDecl.getMembers()) {
-        lines.push(`            ${mem.getValue()} => Self::${mem.getName()},`);
-      }
-      lines.push('            value => Self::Unknown(value),');
-      lines.push('        })');
-    } else {
-      lines.push('        Ok(match raw.as_str() {');
-      for (const mem of enumDecl.getMembers()) {
-        lines.push(`            ${JSON.stringify(String(mem.getValue()))} => Self::${mem.getName()},`);
-      }
-      lines.push('            _ => Self::Unknown(raw),');
-      lines.push('        })');
-    }
-    lines.push('    }');
-    lines.push('}');
-  } else if (isNumeric) {
+  if (isNumeric) {
     lines.push('#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize_repr, Deserialize_repr)]');
     lines.push('#[repr(u32)]');
     lines.push(`pub enum ${name} {`);
@@ -568,8 +510,6 @@ function generateRustEnum(enumDecl: EnumDeclaration): string {
 interface StructOpts {
   /** Omit fields flagged as literal discriminants (for union variants). */
   omitDiscriminants?: boolean;
-  /** Omit Serialize derive when a hand-written implementation is emitted. */
-  omitSerialize?: boolean;
   /** Force `Default` derive (synthesizes Default impl when all fields optional). */
   deriveDefault?: boolean;
   /** Docstring for the struct itself. */
@@ -586,11 +526,7 @@ function generateRustStruct(rustName: string, props: RustProp[], opts: StructOpt
     for (const d of opts.doc.split('\n')) lines.push(`/// ${d.trimEnd()}`);
   }
 
-  const derives = ['Debug', 'Clone', 'PartialEq'];
-  if (!opts.omitSerialize) {
-    derives.push('Serialize');
-  }
-  derives.push('Deserialize');
+  const derives = ['Debug', 'Clone', 'PartialEq', 'Serialize', 'Deserialize'];
   if (wantsDefault) derives.push('Default');
   lines.push(`#[derive(${derives.join(', ')})]`);
   lines.push('#[serde(rename_all = "camelCase")]');
@@ -606,18 +542,9 @@ function generateRustStruct(rustName: string, props: RustProp[], opts: StructOpt
       attrs.push('default');
       attrs.push('skip_serializing_if = "Option::is_none"');
     }
-    if (rustName === 'SessionToolClientExecutionRequest' && p.rustName === 'tool_call') {
-      attrs.push('serialize_with = "serialize_running_tool_call"');
-      attrs.push('deserialize_with = "deserialize_running_tool_call"');
-    }
-    if (rustName === 'AutomationEntry' && p.rustName === 'customizations') {
-      attrs.push('serialize_with = "serialize_plugin_customizations"');
-      attrs.push('deserialize_with = "deserialize_plugin_customizations"');
-    }
     if (attrs.length > 0) {
       lines.push(`    #[serde(${attrs.join(', ')})]`);
     }
-
     // Box self-referential fields to break infinite size cycles.
     let rustType = p.rustType;
     if (rustType.includes(rustName)) {
@@ -628,84 +555,6 @@ function generateRustStruct(rustName: string, props: RustProp[], opts: StructOpt
 
   lines.push('}');
   return lines.join('\n');
-}
-
-function generateRunningToolCallSerdeHelpers(): string {
-  return `fn serialize_running_tool_call<S>(
-    value: &ToolCallRunningState,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let mut raw = serde_json::to_value(value).map_err(serde::ser::Error::custom)?;
-    let serde_json::Value::Object(object) = &mut raw else {
-        return Err(serde::ser::Error::custom("running tool call must serialize to an object"));
-    };
-    object.insert("status".to_owned(), serde_json::Value::String("running".to_owned()));
-    serde::Serialize::serialize(&raw, serializer)
-}
-
-fn deserialize_running_tool_call<'de, D>(deserializer: D) -> Result<ToolCallRunningState, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw = serde_json::Value::deserialize(deserializer)?;
-    if raw.get("status").and_then(serde_json::Value::as_str) != Some("running") {
-        return Err(serde::de::Error::custom("expected running tool-call status"));
-    }
-    serde_json::from_value(raw).map_err(serde::de::Error::custom)
-}`;
-}
-
-/**
- * `PluginCustomization` omits its `type` discriminant because the
- * `Customization` enum supplies it. Standalone plugin lists outside that enum
- * (currently `AutomationEntry.customizations`) must restore it on the wire.
- */
-function generatePluginCustomizationsSerdeHelpers(): string {
-  return `fn serialize_plugin_customizations<S>(
-    value: &Option<Vec<PluginCustomization>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
-where
-    S: serde::Serializer,
-{
-    let Some(items) = value else {
-        return serializer.serialize_none();
-    };
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let mut raw = serde_json::to_value(item).map_err(serde::ser::Error::custom)?;
-        let serde_json::Value::Object(object) = &mut raw else {
-            return Err(serde::ser::Error::custom("plugin customization must serialize to an object"));
-        };
-        object.insert("type".to_owned(), serde_json::Value::String("plugin".to_owned()));
-        out.push(raw);
-    }
-    serde::Serialize::serialize(&out, serializer)
-}
-
-fn deserialize_plugin_customizations<'de, D>(
-    deserializer: D,
-) -> Result<Option<Vec<PluginCustomization>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let Some(items) = Option::<Vec<serde_json::Value>>::deserialize(deserializer)? else {
-        return Ok(None);
-    };
-    items
-        .into_iter()
-        .map(|raw| {
-            if raw.get("type").and_then(serde_json::Value::as_str) != Some("plugin") {
-                return Err(serde::de::Error::custom("expected plugin customization type"));
-            }
-            serde_json::from_value(raw).map_err(serde::de::Error::custom)
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
-}`;
 }
 
 // ─── Partial Struct Generation ───────────────────────────────────────────────
@@ -747,18 +596,9 @@ interface UnionConfig {
   variants: UnionVariant[];
   /** Extra variant for unknown/future values. */
   unknown?: boolean;
-  /** Discriminator enum when a generated wrapper lacks the field itself. */
-  discriminatorEnum?: string;
 }
 
-function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string {
-  const unknown = discriminatedUnionAllowsUnknown(
-    project,
-    cfg.discriminantField,
-    cfg.variants.map(variant => variant.innerType),
-    cfg.unknown,
-    cfg.discriminatorEnum,
-  );
+function generateDiscriminatedUnion(cfg: UnionConfig): string {
   const lines: string[] = [];
   if (cfg.doc) {
     for (const d of cfg.doc.split('\n')) lines.push(`/// ${d.trimEnd()}`);
@@ -780,7 +620,7 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
     }
   }
 
-  if (unknown) {
+  if (cfg.unknown) {
     lines.push('    /// Unknown or future variant — preserved as raw JSON for round-trip fidelity.');
     lines.push('    /// Reducers treat this as a no-op.');
     lines.push('    #[serde(untagged)]');
@@ -790,6 +630,8 @@ function generateDiscriminatedUnion(project: Project, cfg: UnionConfig): string 
   lines.push('}');
   return lines.join('\n');
 }
+
+// ─── Interface → Rust Struct (auto) ──────────────────────────────────────────
 
 function generateStructFromInterface(
   project: Project,
@@ -816,15 +658,9 @@ const STATE_ENUMS = [
   'ToolCallRiskAssessmentStatus',
   'ToolCallCancellationReason',
   'ConfirmationOptionKind', 'ToolCallContributorKind',
-  'ToolResultContentType', 'CustomizationType', 'CustomizationEnablementKind', 'CustomizationLoadStatus',
-  'TerminalClaimKind', 'TerminalLifecycleStatus',
-  'BackgroundWorkKind',
+  'ToolResultContentType', 'CustomizationType', 'CustomizationLoadStatus', 'TerminalClaimKind',
   'McpServerStatus', 'McpAuthRequiredReason',
   'ChangesetStatus', 'ChangesetOperationStatus', 'ChangesetOperationScope', 'ResourceChangeType',
-  'SessionOriginKind',
-  'AutomationOperation', 'AutomationMisfirePolicy', 'AutomationTriggerKind',
-  'AutomationDisableConditionKind',
-  'AutomationRunStatus', 'AutomationRunOriginKind',
 ];
 
 /**
@@ -864,12 +700,7 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'ConfigSchema' },
   { name: 'PendingMessage' },
   { name: 'ChatState' },
-  { name: 'CanvasReference' },
-  { name: 'CanvasState' },
   { name: 'ChatSummary' },
-  { name: 'BackgroundShellWork', omitDiscriminants: true },
-  { name: 'BackgroundSubagentWork', omitDiscriminants: true },
-  { name: 'SideChatSelection' },
   { name: 'SessionState' },
   { name: 'SessionActiveClient' },
   { name: 'SessionChatInputRequest', omitDiscriminants: true },
@@ -877,7 +708,6 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'SessionToolClientExecutionRequest', omitDiscriminants: true },
   { name: 'SessionToolAuthenticationRequest', omitDiscriminants: true },
   { name: 'SessionSummary' },
-  { name: 'SessionChatSummary' },
   { name: 'ChangesSummary' },
   { name: 'ProjectInfo' },
   { name: 'SessionConfigPropertySchema' },
@@ -908,15 +738,13 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'MessageEmbeddedResourceAttachment', omitDiscriminants: true },
   { name: 'MessageResourceAttachment', omitDiscriminants: true },
   { name: 'MessageAnnotationsAttachment', omitDiscriminants: true },
-  { name: 'MessageChatAttachment', omitDiscriminants: true },
   { name: 'MarkdownResponsePart', omitDiscriminants: true },
   { name: 'ContentRef' },
-  { name: 'ResourceResponsePart', omitDiscriminants: true },
+  { name: 'ResourceReponsePart', omitDiscriminants: true, rustName: 'ResourceResponsePart' },
   { name: 'ToolCallResponsePart', omitDiscriminants: true },
   { name: 'ReasoningResponsePart', omitDiscriminants: true },
   { name: 'SystemNotificationResponsePart', omitDiscriminants: true },
   { name: 'InputRequestResponsePart', omitDiscriminants: true },
-  { name: 'ErrorResponsePart', omitDiscriminants: true },
   { name: 'ToolCallResult' },
   { name: 'ToolCallRiskAssessmentLoadingState', omitDiscriminants: true },
   { name: 'ToolCallRiskAssessmentCompleteState', omitDiscriminants: true },
@@ -935,13 +763,14 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'ToolResultResourceContent', omitDiscriminants: true },
   { name: 'ToolResultFileEditContent', omitDiscriminants: true },
   { name: 'ToolResultTerminalContent', omitDiscriminants: true },
+  { name: 'ToolResultTerminalCompleteContent', omitDiscriminants: true },
   { name: 'ToolResultSubagentContent', omitDiscriminants: true },
   { name: 'CustomizationLoadingState', omitDiscriminants: true },
   { name: 'CustomizationLoadedState', omitDiscriminants: true },
   { name: 'CustomizationDegradedState', omitDiscriminants: true },
   { name: 'CustomizationErrorState', omitDiscriminants: true },
   { name: 'PluginCustomization', omitDiscriminants: true },
-  { name: 'ClientPluginCustomization' },
+  { name: 'ClientPluginCustomization', omitDiscriminants: true },
   { name: 'DirectoryCustomization', omitDiscriminants: true },
   { name: 'AgentCustomization', omitDiscriminants: true },
   { name: 'SkillCustomization', omitDiscriminants: true },
@@ -960,16 +789,10 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'McpAuthRequirement' },
   { name: 'ToolCallClientContributor', omitDiscriminants: true },
   { name: 'ToolCallMcpContributor', omitDiscriminants: true },
-  { name: 'FileEditSide' },
-  { name: 'FileEditDiffStats' },
   { name: 'FileEdit' },
-  { name: 'FileEditCollection' },
-  { name: 'TerminalCommandResult' },
   { name: 'TerminalInfo' },
   { name: 'TerminalClientClaim', omitDiscriminants: true },
   { name: 'TerminalSessionClaim', omitDiscriminants: true },
-  { name: 'TerminalRunningLifecycleState', omitDiscriminants: true },
-  { name: 'TerminalExitedLifecycleState', omitDiscriminants: true },
   { name: 'TerminalState' },
   { name: 'TerminalUnclassifiedPart', omitDiscriminants: true },
   { name: 'TerminalCommandPart', omitDiscriminants: true },
@@ -983,34 +806,11 @@ const STATE_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: str
   { name: 'ChangesetOperation' },
   { name: 'AnnotationsSummary' },
   { name: 'AnnotationsState' },
-  { name: 'AnnotationOrigin' },
   { name: 'Annotation' },
   { name: 'AnnotationEntry' },
   { name: 'TelemetryCapabilities' },
   { name: 'ResourceWatchState' },
   { name: 'ResourceChange' },
-  { name: 'AutomationSessionOrigin', omitDiscriminants: true },
-  { name: 'AutomationSchedule' },
-  { name: 'AutomationScheduleTrigger', omitDiscriminants: true },
-  { name: 'AutomationEventTrigger', omitDiscriminants: true },
-  { name: 'AutomationTriggerEventDefinition' },
-  { name: 'AutomationTriggerDefinition' },
-  { name: 'AutomationSessionTemplate' },
-  { name: 'AutomationDefinition' },
-  { name: 'AutomationDefinitionPatch' },
-  { name: 'AutomationAfterRunsCondition', omitDiscriminants: true },
-  { name: 'AutomationAfterDateCondition', omitDiscriminants: true },
-  { name: 'AutomationEntry' },
-  { name: 'AutomationState' },
-  { name: 'AutomationManualRunOrigin', omitDiscriminants: true },
-  { name: 'AutomationTriggeredRunOrigin', omitDiscriminants: true },
-  { name: 'AutomationPendingRunLifecycle', omitDiscriminants: true },
-  { name: 'AutomationRunningRunLifecycle', omitDiscriminants: true },
-  { name: 'AutomationCompletedRunLifecycle', omitDiscriminants: true },
-  { name: 'AutomationFailedRunLifecycle', omitDiscriminants: true },
-  { name: 'AutomationCancelledRunLifecycle', omitDiscriminants: true },
-  { name: 'AutomationRunSummary' },
-  { name: 'AutomationRunState' },
 ];
 
 const RESPONSE_PART_UNION: UnionConfig = {
@@ -1024,7 +824,6 @@ const RESPONSE_PART_UNION: UnionConfig = {
     { variantName: 'Reasoning', innerType: 'ReasoningResponsePart', wireValue: 'reasoning' },
     { variantName: 'SystemNotification', innerType: 'SystemNotificationResponsePart', wireValue: 'systemNotification' },
     { variantName: 'InputRequest', innerType: 'InputRequestResponsePart', wireValue: 'inputRequest' },
-    { variantName: 'Error', innerType: 'ErrorResponsePart', wireValue: 'error' },
   ],
   unknown: true,
 };
@@ -1129,6 +928,7 @@ const TOOL_RESULT_CONTENT_UNION: UnionConfig = {
     { variantName: 'Resource', innerType: 'ToolResultResourceContent', wireValue: 'resource' },
     { variantName: 'FileEdit', innerType: 'ToolResultFileEditContent', wireValue: 'fileEdit' },
     { variantName: 'Terminal', innerType: 'ToolResultTerminalContent', wireValue: 'terminal' },
+    { variantName: 'TerminalComplete', innerType: 'ToolResultTerminalCompleteContent', wireValue: 'terminalComplete' },
     { variantName: 'Subagent', innerType: 'ToolResultSubagentContent', wireValue: 'subagent' },
   ],
   unknown: true,
@@ -1143,7 +943,6 @@ const MESSAGE_ATTACHMENT_UNION: UnionConfig = {
     { variantName: 'EmbeddedResource', innerType: 'MessageEmbeddedResourceAttachment', wireValue: 'embeddedResource' },
     { variantName: 'Resource', innerType: 'MessageResourceAttachment', wireValue: 'resource' },
     { variantName: 'Annotations', innerType: 'MessageAnnotationsAttachment', wireValue: 'annotations' },
-    { variantName: 'Chat', innerType: 'MessageChatAttachment', wireValue: 'chat' },
   ],
   unknown: true,
 };
@@ -1229,16 +1028,6 @@ const TOOL_CALL_RISK_ASSESSMENT_UNION: UnionConfig = {
   unknown: true,
 };
 
-const TERMINAL_LIFECYCLE_STATE_UNION: UnionConfig = {
-  name: 'TerminalLifecycleState',
-  discriminantField: 'status',
-  doc: 'Current lifecycle of a terminal process.',
-  variants: [
-    { variantName: 'Running', innerType: 'TerminalRunningLifecycleState', wireValue: 'running' },
-    { variantName: 'Exited', innerType: 'TerminalExitedLifecycleState', wireValue: 'exited' },
-  ],
-};
-
 const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
   name: 'SessionInputRequest',
   discriminantField: 'kind',
@@ -1247,84 +1036,12 @@ const SESSION_INPUT_REQUEST_UNION: UnionConfig = {
     { variantName: 'ChatInput', innerType: 'SessionChatInputRequest', wireValue: 'chatInput' },
     { variantName: 'ToolConfirmation', innerType: 'SessionToolConfirmationRequest', wireValue: 'toolConfirmation' },
     { variantName: 'ToolClientExecution', innerType: 'SessionToolClientExecutionRequest', wireValue: 'toolClientExecution' },
-    { variantName: 'ToolAuthentication', innerType: 'SessionToolAuthenticationRequest', wireValue: 'toolAuthentication', boxed: true },
+    { variantName: 'ToolAuthentication', innerType: 'SessionToolAuthenticationRequest', wireValue: 'toolAuthentication' },
   ],
   unknown: true,
 };
 
-const BACKGROUND_WORK_UNION: UnionConfig = {
-  name: 'BackgroundWork',
-  discriminantField: 'kind',
-  doc: 'Work that keeps running after the tool call that started it returns and will resume the owning chat when it finishes.',
-  variants: [
-    { variantName: 'Shell', innerType: 'BackgroundShellWork', wireValue: 'shell' },
-    { variantName: 'Subagent', innerType: 'BackgroundSubagentWork', wireValue: 'subagent' },
-  ],
-  unknown: true,
-};
-
-const SESSION_ORIGIN_UNION: UnionConfig = {
-  name: 'SessionOrigin',
-  discriminantField: 'kind',
-  doc: 'Durable origin of a session.',
-  variants: [
-    { variantName: 'Automation', innerType: 'AutomationSessionOrigin', wireValue: 'automation' },
-  ],
-};
-
-const AUTOMATION_TRIGGER_UNION: UnionConfig = {
-  name: 'AutomationTrigger',
-  discriminantField: 'kind',
-  doc: 'Automatic trigger for an automation.',
-  variants: [
-    { variantName: 'Schedule', innerType: 'AutomationScheduleTrigger', wireValue: 'schedule' },
-    { variantName: 'Event', innerType: 'AutomationEventTrigger', wireValue: 'event' },
-  ],
-};
-
-const AUTOMATION_DISABLE_CONDITION_UNION: UnionConfig = {
-  name: 'AutomationDisableCondition',
-  discriminantField: 'kind',
-  doc: 'Self-disable rule for an automation.',
-  variants: [
-    { variantName: 'AfterRuns', innerType: 'AutomationAfterRunsCondition', wireValue: 'afterRuns' },
-    { variantName: 'AfterDate', innerType: 'AutomationAfterDateCondition', wireValue: 'afterDate' },
-  ],
-};
-
-const AUTOMATION_RUN_ORIGIN_UNION: UnionConfig = {
-  name: 'AutomationRunOrigin',
-  discriminantField: 'kind',
-  doc: 'Provenance describing how an automation run was created.',
-  variants: [
-    { variantName: 'Manual', innerType: 'AutomationManualRunOrigin', wireValue: 'manual' },
-    { variantName: 'Trigger', innerType: 'AutomationTriggeredRunOrigin', wireValue: 'trigger' },
-  ],
-};
-
-const AUTOMATION_RUN_LIFECYCLE_UNION: UnionConfig = {
-  name: 'AutomationRunLifecycle',
-  discriminantField: 'status',
-  doc: 'Lifecycle of an automation run.',
-  variants: [
-    { variantName: 'Pending', innerType: 'AutomationPendingRunLifecycle', wireValue: 'pending' },
-    { variantName: 'Running', innerType: 'AutomationRunningRunLifecycle', wireValue: 'running' },
-    { variantName: 'Completed', innerType: 'AutomationCompletedRunLifecycle', wireValue: 'completed' },
-    { variantName: 'Failed', innerType: 'AutomationFailedRunLifecycle', wireValue: 'failed' },
-    { variantName: 'Cancelled', innerType: 'AutomationCancelledRunLifecycle', wireValue: 'cancelled' },
-  ],
-};
-
-function generateChatOrigin(project: Project): string {
-  const originKind = findEnum(project, 'ChatOriginKind');
-  if (!originKind) throw new Error('ChatOriginKind enum not found');
-  const unknownVariant = getEnumCompatibility(originKind) === 'nonexhaustive'
-    ? `    /// Unknown or future variant — preserved as raw JSON for round-trip fidelity.
-    /// Reducers treat this as a no-op.
-    #[serde(untagged)]
-    Unknown(serde_json::Value),
-`
-    : '';
+function generateChatOrigin(): string {
   return `/// How a chat came into existence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -1337,21 +1054,9 @@ pub enum ChatOrigin {
     Fork {
         /// URI of the chat this one was forked from.
         chat: Uri,
-        /// Completed source-turn identifier the fork was taken from.
+        /// Turn the fork was taken from.
         #[serde(rename = "turnId")]
         turn_id: String,
-    },
-    /// Independent side conversation created from a specific turn.
-    #[serde(rename = "sideChat")]
-    SideChat {
-        /// URI of the chat that supplied the side-chat context.
-        chat: Uri,
-        /// Stable source-turn identifier through which context was supplied.
-        #[serde(rename = "turnId")]
-        turn_id: String,
-        /// Optional immutable selected-text snapshot captured when the side chat was created.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        selection: Option<SideChatSelection>,
     },
     /// Spawned by a tool call in another chat.
     #[serde(rename = "tool")]
@@ -1362,42 +1067,32 @@ pub enum ChatOrigin {
         #[serde(rename = "toolCallId")]
         tool_call_id: String,
     },
-${unknownVariant}}`;
+    /// Unknown or future variant — preserved as raw JSON for round-trip fidelity.
+    /// Reducers treat this as a no-op.
+    #[serde(untagged)]
+    Unknown(serde_json::Value),
+}`;
 }
 
 function generateSnapshotState(): string {
-  return `/// The state payload of a snapshot.
+  return `/// The state payload of a snapshot — root, session, chat, terminal,
+/// changeset, resource-watch, or annotations state.
 ///
 /// Deserialized by trying session first (has required \`lifecycle\`), then
-/// chat (has required \`turns\`), then canvas (has required instance/provider/type
-/// identifiers), then terminal (has required \`content\`),
+/// chat (has required \`turns\`), then terminal (has required \`content\`),
 /// then changeset (has required \`status\` and \`files\`), then resource-watch
 /// (has required \`root\` and \`recursive\`), then annotations (has required
-/// \`annotations\`), then the automation catalogue (has required
-/// \`automations\`), then root.
+/// \`annotations\`), then root.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SnapshotState {
     Session(Box<SessionState>),
     Chat(Box<ChatState>),
-    Canvas(Box<CanvasState>),
     Terminal(Box<TerminalState>),
     Changeset(Box<ChangesetState>),
     ResourceWatch(Box<ResourceWatchState>),
     Annotations(Box<AnnotationsState>),
-    Automations(Box<AutomationState>),
-    AutomationRun(Box<AutomationRunState>),
     Root(Box<RootState>),
-}`;
-}
-
-function generateToolInput(): string {
-  return `/// Raw tool input represented inline or by content reference.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ToolInput {
-    Inline(String),
-    ContentRef(ContentRef),
 }`;
 }
 
@@ -1422,14 +1117,6 @@ function generateStateFile(project: Project): string {
       lines.push(generateStructFromInterface(project, entry.name, entry.rustName, {
         omitDiscriminants: entry.omitDiscriminants,
       }));
-      if (entry.name === 'SessionToolClientExecutionRequest') {
-        lines.push('');
-        lines.push(generateRunningToolCallSerdeHelpers());
-      }
-      if (entry.name === 'AutomationEntry') {
-        lines.push('');
-        lines.push(generatePluginCustomizationsSerdeHelpers());
-      }
       if (entry.name === 'SubscribeParams') {
         lines.push('');
         lines.push(generateSubscribeParamsImplRust());
@@ -1441,62 +1128,42 @@ function generateStateFile(project: Project): string {
     }
   }
 
-  lines.push('// ─── Customization Enablement Union ───────────────────────────────────────\n');
-  lines.push(generateCustomizationEnablementRust(project));
-  lines.push('');
-
-  lines.push(generateToolInput());
-  lines.push('');
-
   lines.push('// ─── Discriminated Unions ─────────────────────────────────────────────\n');
-  lines.push(generateChatOrigin(project));
+  lines.push(generateChatOrigin());
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, RESPONSE_PART_UNION));
+  lines.push(generateDiscriminatedUnion(RESPONSE_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONFIRMATION_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONFIRMATION_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CLAIM_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CLAIM_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_CONTENT_PART_UNION));
+  lines.push(generateDiscriminatedUnion(TERMINAL_CONTENT_PART_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_QUESTION_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_QUESTION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_ANSWER_VALUE_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_ANSWER_VALUE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHAT_INPUT_ANSWER_UNION));
+  lines.push(generateDiscriminatedUnion(CHAT_INPUT_ANSWER_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_RESULT_CONTENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_RESULT_CONTENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MESSAGE_ATTACHMENT_UNION));
+  lines.push(generateDiscriminatedUnion(MESSAGE_ATTACHMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CHILD_CUSTOMIZATION_UNION));
+  lines.push(generateDiscriminatedUnion(CHILD_CUSTOMIZATION_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, CUSTOMIZATION_LOAD_STATE_UNION));
+  lines.push(generateDiscriminatedUnion(CUSTOMIZATION_LOAD_STATE_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, MCP_SERVER_STATUS_UNION));
+  lines.push(generateDiscriminatedUnion(MCP_SERVER_STATUS_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_CONTRIBUTOR_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_CONTRIBUTOR_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TOOL_CALL_RISK_ASSESSMENT_UNION));
+  lines.push(generateDiscriminatedUnion(TOOL_CALL_RISK_ASSESSMENT_UNION));
   lines.push('');
-  lines.push(generateDiscriminatedUnion(project, TERMINAL_LIFECYCLE_STATE_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_INPUT_REQUEST_UNION));
-  lines.push(generateDiscriminatedUnion(project, BACKGROUND_WORK_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, SESSION_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_TRIGGER_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_DISABLE_CONDITION_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_ORIGIN_UNION));
-  lines.push('');
-  lines.push(generateDiscriminatedUnion(project, AUTOMATION_RUN_LIFECYCLE_UNION));
+  lines.push(generateDiscriminatedUnion(SESSION_INPUT_REQUEST_UNION));
   lines.push('');
   lines.push(generateSnapshotState());
   lines.push('');
@@ -1522,7 +1189,6 @@ const ACTION_VARIANTS: {
   { type: 'session/chatAdded', variantName: 'SessionChatAdded', tsInterface: 'SessionChatAddedAction' },
   { type: 'session/chatRemoved', variantName: 'SessionChatRemoved', tsInterface: 'SessionChatRemovedAction' },
   { type: 'session/chatUpdated', variantName: 'SessionChatUpdated', tsInterface: 'SessionChatUpdatedAction' },
-  { type: 'session/chatsReordered', variantName: 'SessionChatsReordered', tsInterface: 'SessionChatsReorderedAction' },
   { type: 'session/defaultChatChanged', variantName: 'SessionDefaultChatChanged', tsInterface: 'SessionDefaultChatChangedAction' },
   { type: 'chat/turnStarted', variantName: 'ChatTurnStarted', tsInterface: 'ChatTurnStartedAction' },
   { type: 'chat/delta', variantName: 'ChatDelta', tsInterface: 'ChatDeltaAction' },
@@ -1539,14 +1205,7 @@ const ACTION_VARIANTS: {
   { type: 'chat/turnComplete', variantName: 'ChatTurnComplete', tsInterface: 'ChatTurnCompleteAction' },
   { type: 'chat/turnCancelled', variantName: 'ChatTurnCancelled', tsInterface: 'ChatTurnCancelledAction' },
   { type: 'chat/error', variantName: 'ChatError', tsInterface: 'ChatErrorAction' },
-  { type: 'chat/turnResume', variantName: 'ChatTurnResume', tsInterface: 'ChatTurnResumeAction' },
   { type: 'chat/activityChanged', variantName: 'ChatActivityChanged', tsInterface: 'ChatActivityChangedAction' },
-  { type: 'chat/backgroundWorkSet', variantName: 'ChatBackgroundWorkSet', tsInterface: 'ChatBackgroundWorkSetAction' },
-  { type: 'chat/backgroundWorkRemoved', variantName: 'ChatBackgroundWorkRemoved', tsInterface: 'ChatBackgroundWorkRemovedAction' },
-  { type: 'chat/movableChanged', variantName: 'ChatMovableChanged', tsInterface: 'ChatMovableChangedAction' },
-  { type: 'chat/changesetsChanged', variantName: 'ChatChangesetsChanged', tsInterface: 'ChatChangesetsChangedAction' },
-  { type: 'chat/canvasesChanged', variantName: 'ChatCanvasesChanged', tsInterface: 'ChatCanvasesChangedAction' },
-  { type: 'canvas/stateChanged', variantName: 'CanvasStateChanged', tsInterface: 'CanvasStateChangedAction' },
   { type: 'session/titleChanged', variantName: 'SessionTitleChanged', tsInterface: 'SessionTitleChangedAction' },
   { type: 'chat/usage', variantName: 'ChatUsage', tsInterface: 'ChatUsageAction' },
   { type: 'chat/reasoning', variantName: 'ChatReasoning', tsInterface: 'ChatReasoningAction' },
@@ -1559,7 +1218,6 @@ const ACTION_VARIANTS: {
   { type: 'session/activeClientRemoved', variantName: 'SessionActiveClientRemoved', tsInterface: 'SessionActiveClientRemovedAction' },
   { type: 'session/workingDirectorySet', variantName: 'SessionWorkingDirectorySet', tsInterface: 'SessionWorkingDirectorySetAction' },
   { type: 'session/workingDirectoryRemoved', variantName: 'SessionWorkingDirectoryRemoved', tsInterface: 'SessionWorkingDirectoryRemovedAction' },
-  { type: 'session/workingDirectoryReplaced', variantName: 'SessionWorkingDirectoryReplaced', tsInterface: 'SessionWorkingDirectoryReplacedAction' },
   { type: 'chat/workingDirectorySet', variantName: 'ChatWorkingDirectorySet', tsInterface: 'ChatWorkingDirectorySetAction' },
   { type: 'chat/workingDirectoryRemoved', variantName: 'ChatWorkingDirectoryRemoved', tsInterface: 'ChatWorkingDirectoryRemovedAction' },
   { type: 'session/inputNeededSet', variantName: 'SessionInputNeededSet', tsInterface: 'SessionInputNeededSetAction', boxed: true },
@@ -1568,8 +1226,6 @@ const ACTION_VARIANTS: {
   { type: 'chat/pendingMessageRemoved', variantName: 'ChatPendingMessageRemoved', tsInterface: 'ChatPendingMessageRemovedAction' },
   { type: 'chat/queuedMessagesReordered', variantName: 'ChatQueuedMessagesReordered', tsInterface: 'ChatQueuedMessagesReorderedAction' },
   { type: 'chat/draftChanged', variantName: 'ChatDraftChanged', tsInterface: 'ChatDraftChangedAction' },
-  { type: 'chat/isReadChanged', variantName: 'ChatIsReadChanged', tsInterface: 'ChatIsReadChangedAction' },
-  { type: 'chat/isArchivedChanged', variantName: 'ChatIsArchivedChanged', tsInterface: 'ChatIsArchivedChangedAction' },
   { type: 'chat/inputRequested', variantName: 'ChatInputRequested', tsInterface: 'ChatInputRequestedAction' },
   { type: 'chat/inputAnswerChanged', variantName: 'ChatInputAnswerChanged', tsInterface: 'ChatInputAnswerChangedAction' },
   { type: 'chat/inputCompleted', variantName: 'ChatInputCompleted', tsInterface: 'ChatInputCompletedAction' },
@@ -1580,7 +1236,6 @@ const ACTION_VARIANTS: {
   { type: 'session/mcpServerStateChanged', variantName: 'SessionMcpServerStateChanged', tsInterface: 'SessionMcpServerStateChangedAction', boxed: true },
   { type: 'session/mcpServerStartRequested', variantName: 'SessionMcpServerStartRequested', tsInterface: 'SessionMcpServerStartRequestedAction' },
   { type: 'session/mcpServerStopRequested', variantName: 'SessionMcpServerStopRequested', tsInterface: 'SessionMcpServerStopRequestedAction' },
-  { type: 'session/mcpServerBackgroundRequested', variantName: 'SessionMcpServerBackgroundRequested', tsInterface: 'SessionMcpServerBackgroundRequestedAction' },
   { type: 'chat/truncated', variantName: 'ChatTruncated', tsInterface: 'ChatTruncatedAction' },
   { type: 'chat/turnsLoaded', variantName: 'ChatTurnsLoaded', tsInterface: 'ChatTurnsLoadedAction' },
   { type: 'session/configChanged', variantName: 'SessionConfigChanged', tsInterface: 'SessionConfigChangedAction' },
@@ -1611,15 +1266,6 @@ const ACTION_VARIANTS: {
   { type: 'terminal/commandExecuted', variantName: 'TerminalCommandExecuted', tsInterface: 'TerminalCommandExecutedAction' },
   { type: 'terminal/commandFinished', variantName: 'TerminalCommandFinished', tsInterface: 'TerminalCommandFinishedAction' },
   { type: 'resourceWatch/changed', variantName: 'ResourceWatchChanged', tsInterface: 'ResourceWatchChangedAction' },
-  { type: 'automation/createRequested', variantName: 'AutomationCreateRequested', tsInterface: 'AutomationCreateRequestedAction', boxed: true },
-  { type: 'automation/updateRequested', variantName: 'AutomationUpdateRequested', tsInterface: 'AutomationUpdateRequestedAction', boxed: true },
-  { type: 'automation/set', variantName: 'AutomationSet', tsInterface: 'AutomationSetAction', boxed: true },
-  { type: 'automation/removed', variantName: 'AutomationRemoved', tsInterface: 'AutomationRemovedAction' },
-  { type: 'automationRun/lifecycleChanged', variantName: 'AutomationRunLifecycleChanged', tsInterface: 'AutomationRunLifecycleChangedAction', boxed: true },
-  { type: 'automationRun/sessionSet', variantName: 'AutomationRunSessionSet', tsInterface: 'AutomationRunSessionSetAction' },
-  { type: 'automationRun/sessionRemoved', variantName: 'AutomationRunSessionRemoved', tsInterface: 'AutomationRunSessionRemovedAction' },
-  { type: 'automationRun/primarySessionChanged', variantName: 'AutomationRunPrimarySessionChanged', tsInterface: 'AutomationRunPrimarySessionChangedAction' },
-  { type: 'automationRun/cancelRequested', variantName: 'AutomationRunCancelRequested', tsInterface: 'AutomationRunCancelRequestedAction' },
 ];
 
 function generateMergedToolCallConfirmedStruct(scope: 'Session' | 'Chat' = 'Session'): string {
@@ -1655,50 +1301,12 @@ pub struct ${scope}ToolCallConfirmedAction {
 }`;
 }
 
-function generateChatErrorActionSerializeImpl(): string {
-  return `#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ChatErrorActionPart<'a> {
-    kind: &'static str,
-    error: &'a ErrorInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    resumable: Option<bool>,
-}
-
-impl Serialize for ChatErrorAction {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        use serde::ser::SerializeStruct;
-
-        let mut state = serializer.serialize_struct(
-            "ChatErrorAction",
-            if self.meta.is_some() { 4 } else { 3 },
-        )?;
-        state.serialize_field("turnId", &self.turn_id)?;
-        state.serialize_field("duration", &self.duration)?;
-        state.serialize_field(
-            "part",
-            &ChatErrorActionPart {
-                kind: "error",
-                error: &self.part.error,
-                resumable: self.part.resumable,
-            },
-        )?;
-        if let Some(meta) = &self.meta {
-            state.serialize_field("_meta", meta)?;
-        }
-        state.end()
-    }
-}`;
-}
-
 function generateActionsFile(project: Project): string {
   const lines: string[] = [GENERATED_HEADER];
   lines.push('#[allow(unused_imports)]');
-  lines.push('use crate::state::{AgentInfo, AgentSelection, Annotation, AnnotationEntry, AnnotationOrigin, AutomationDefinition, AutomationDefinitionPatch, AutomationEntry, AutomationRunLifecycle, AutomationRunSummary, BackgroundWork, CanvasReference, CanvasState, ChangesSummary, ChatInputAnswer, ChatInputRequest, ChatInputResponseKind, ChatInteractivity, ChatOrigin, ConfirmationOption, ContentRef, Customization, CustomizationEnablement, ErrorInfo, ErrorResponsePart, FileEditCollection, McpAuthRequirement, McpServerState, ModelSelection, ResponsePart, SessionActiveClient, SessionInputRequest, SideChatSelection, TerminalClaim, TerminalInfo, TextRange, ToolCallContributor, ToolCallResult, ToolCallRiskAssessment, ToolCallConfirmationReason, ToolCallCancellationReason, ToolDefinition, ToolInput, ToolResultContent, UsageInfo, Message, PendingMessageKind, Turn, ChangesetStatus, ChangesetFile, ChangesetOperation, ChangesetOperationStatus, Changeset, ChatSummary};');
+  lines.push('use crate::state::{AgentInfo, AgentSelection, Annotation, AnnotationEntry, ChatInputAnswer, ChatInputRequest, ChatInputResponseKind, ChatInteractivity, ChatOrigin, ConfirmationOption, Customization, ErrorInfo, McpAuthRequirement, McpServerState, ModelSelection, ResponsePart, SessionActiveClient, SessionInputRequest, TerminalClaim, TerminalInfo, TextRange, ToolCallContributor, ToolCallResult, ToolCallRiskAssessment, ToolCallConfirmationReason, ToolCallCancellationReason, ToolDefinition, ToolResultContent, UsageInfo, Message, PendingMessageKind, Turn, ChangesetStatus, ChangesetFile, ChangesetOperation, ChangesetOperationStatus, Changeset, ChatSummary};');
   lines.push('');
+
   // ActionType enum
   lines.push('// ─── ActionType ──────────────────────────────────────────────────────\n');
   const actionTypeEnum = findEnum(project, 'ActionType');
@@ -1745,12 +1353,7 @@ pub struct ActionEnvelope {
     try {
       lines.push(generateStructFromInterface(project, v.tsInterface, undefined, {
         omitDiscriminants: true,
-        omitSerialize: v.tsInterface === 'ChatErrorAction',
       }));
-      if (v.tsInterface === 'ChatErrorAction') {
-        lines.push('');
-        lines.push(generateChatErrorActionSerializeImpl());
-      }
       lines.push('');
     } catch (e) {
       lines.push(`// TODO: could not generate ${v.tsInterface}: ${e}`);
@@ -1786,12 +1389,12 @@ pub struct ActionEnvelope {
     wireValue: v.type,
     boxed: v.boxed,
   }));
-  lines.push(generateDiscriminatedUnion(project, {
+  lines.push(generateDiscriminatedUnion({
     name: 'StateAction',
     discriminantField: 'type',
     doc: 'Discriminated union of every state action.',
     variants,
-    discriminatorEnum: 'ActionType',
+    unknown: true,
   }));
   lines.push('');
 
@@ -1800,26 +1403,19 @@ pub struct ActionEnvelope {
 
 // ─── Commands File Generator ─────────────────────────────────────────────────
 
-const COMMAND_ENUMS = ['ReconnectResultType', 'ChatSourceKind', 'ChatMoveDestinationKind', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
+const COMMAND_ENUMS = ['ReconnectResultType', 'ContentEncoding', 'CompletionItemKind', 'ResourceType', 'ResourceWriteMode'];
 
 const COMMAND_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: string }[] = [
   { name: 'InitializeParams' }, { name: 'InitializeResult' },
-  { name: 'ClientCapabilities' }, { name: 'AutomationCapabilities' },
-  { name: 'AutomationCreateCapability' },
-  { name: 'AutomationScheduleCapabilities' },
-  { name: 'AutomationRunCancellationCapability' },
-  { name: 'AutomationCustomizationsCapability' },
-  { name: 'Implementation' },
+  { name: 'ClientCapabilities' }, { name: 'Implementation' },
   { name: 'ReconnectParams' },
   { name: 'ReconnectReplayResult', omitDiscriminants: true },
   { name: 'ReconnectSnapshotResult', omitDiscriminants: true },
   { name: 'SubscribeParams' }, { name: 'SubscribeView' }, { name: 'SubscriptionDeliveryOptions' }, { name: 'SubscribeResult' },
-  { name: 'CreateSessionParams' },
+  { name: 'SessionForkSource' }, { name: 'CreateSessionParams' },
   { name: 'DisposeSessionParams' },
-  { name: 'ForkChatSource', omitDiscriminants: true }, { name: 'SideChatSource', omitDiscriminants: true }, { name: 'CreateChatParams' },
+  { name: 'ChatForkSource' }, { name: 'CreateChatParams' },
   { name: 'DisposeChatParams' },
-  { name: 'ChatMoveToSessionDestination', omitDiscriminants: true }, { name: 'ChatMoveToNewSessionDestination', omitDiscriminants: true },
-  { name: 'MoveChatParams' }, { name: 'MoveChatResult' },
   { name: 'ListSessionsParams' }, { name: 'ListSessionsResult' },
   { name: 'ResourceReadParams' }, { name: 'ResourceReadResult' },
   { name: 'ResourceWriteParams' }, { name: 'ResourceWriteResult' },
@@ -1842,9 +1438,6 @@ const COMMAND_STRUCTS: { name: string; omitDiscriminants?: boolean; rustName?: s
   { name: 'CompletionsParams' }, { name: 'CompletionItem' }, { name: 'CompletionsResult' },
   { name: 'InvokeChangesetOperationParams' }, { name: 'InvokeChangesetOperationResult' },
   { name: 'ChangesetOperationFollowUp' },
-  { name: 'ListAutomationTriggerDefinitionsParams' }, { name: 'ListAutomationTriggerDefinitionsResult' },
-  { name: 'RunAutomationParams' }, { name: 'RunAutomationResult' },
-  { name: 'FetchAutomationRunsParams' }, { name: 'FetchAutomationRunsResult' },
 ];
 
 const RECONNECT_RESULT_UNION: UnionConfig = {
@@ -1857,32 +1450,12 @@ const RECONNECT_RESULT_UNION: UnionConfig = {
   ],
 };
 
-const CHAT_SOURCE_UNION: UnionConfig = {
-  name: 'ChatSource',
-  discriminantField: 'kind',
-  doc: 'How a new chat uses a source chat.',
-  variants: [
-    { variantName: 'Fork', innerType: 'ForkChatSource', wireValue: 'fork' },
-    { variantName: 'SideChat', innerType: 'SideChatSource', wireValue: 'sideChat' },
-  ],
-};
-
-const CHAT_MOVE_DESTINATION_UNION: UnionConfig = {
-  name: 'ChatMoveDestination',
-  discriminantField: 'kind',
-  doc: 'Destination of an atomic chat move.',
-  variants: [
-    { variantName: 'Session', innerType: 'ChatMoveToSessionDestination', wireValue: 'session' },
-    { variantName: 'NewSession', innerType: 'ChatMoveToNewSessionDestination', wireValue: 'newSession' },
-  ],
-};
-
 function generateCommandsFile(project: Project): string {
   const lines: string[] = [GENERATED_HEADER];
   lines.push('#[allow(unused_imports)]');
   lines.push('use crate::actions::{ActionEnvelope, StateAction};');
   lines.push('#[allow(unused_imports)]');
-  lines.push('use crate::state::{AgentSelection, AutomationDefinition, AutomationSchedule, AutomationSessionTemplate, AutomationTrigger, AutomationTriggerDefinition, ContentRef, Message, MessageAttachment, ModelSelection, SessionActiveClient, SessionConfigSchema, SessionSummary, SideChatSelection, Snapshot, SnapshotState, TelemetryCapabilities, TerminalClaim, TextRange, Turn};');
+  lines.push('use crate::state::{AgentSelection, ContentRef, Message, MessageAttachment, ModelSelection, SessionActiveClient, SessionConfigSchema, SessionSummary, Snapshot, SnapshotState, TelemetryCapabilities, TerminalClaim, TextRange, Turn};');
   lines.push('');
 
   lines.push('// ─── Enums ────────────────────────────────────────────────────────────\n');
@@ -1914,49 +1487,15 @@ function generateCommandsFile(project: Project): string {
     }
   }
 
-  lines.push('// ─── ChatSource Union ─────────────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, CHAT_SOURCE_UNION));
-  lines.push('');
-  lines.push('// ─── ChatMoveDestination Union ────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, CHAT_MOVE_DESTINATION_UNION));
-  lines.push('');
   lines.push('// ─── ReconnectResult Union ────────────────────────────────────────────\n');
-  lines.push(generateDiscriminatedUnion(project, RECONNECT_RESULT_UNION));
+  lines.push(generateDiscriminatedUnion(RECONNECT_RESULT_UNION));
   lines.push('');
 
   lines.push('// ─── Changeset Operation Unions ───────────────────────────────────────\n');
-  lines.push(generateChangesetOperationTargetRust(project));
+  lines.push(generateChangesetOperationTargetRust());
   lines.push('');
 
   return lines.join('\n');
-}
-
-function generateCustomizationEnablementRust(project: Project): string {
-  const kind = findEnum(project, 'CustomizationEnablementKind');
-  if (!kind) throw new Error('CustomizationEnablementKind enum not found');
-  const unknownVariant = getEnumCompatibility(kind) === 'nonexhaustive'
-    ? `    #[serde(untagged)]
-    Unknown(serde_json::Value),
-`
-    : '';
-  return `/// A single explicit customization enablement decision.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum CustomizationEnablement {
-    #[serde(rename = "global")]
-    Global {
-        enabled: bool,
-    },
-    #[serde(rename = "workspace")]
-    Workspace {
-        uri: Uri,
-        enabled: bool,
-    },
-    #[serde(rename = "session")]
-    Session {
-        enabled: bool,
-    },
-${unknownVariant}}`;
 }
 
 function generateSubscribeParamsImplRust(): string {
@@ -1965,7 +1504,6 @@ function generateSubscribeParamsImplRust(): string {
     pub fn new(channel: impl Into<Uri>) -> Self {
         Self {
             channel: channel.into(),
-            meta: None,
             delivery: None,
             view: None,
         }
@@ -1975,7 +1513,6 @@ function generateSubscribeParamsImplRust(): string {
     pub fn with_delivery(channel: impl Into<Uri>, delivery: SubscriptionDeliveryOptions) -> Self {
         Self {
             channel: channel.into(),
-            meta: None,
             delivery: Some(delivery),
             view: None,
         }
@@ -1985,7 +1522,6 @@ function generateSubscribeParamsImplRust(): string {
     pub fn with_view(channel: impl Into<Uri>, view: SubscribeView) -> Self {
         Self {
             channel: channel.into(),
-            meta: None,
             delivery: None,
             view: Some(view),
         }
@@ -1993,14 +1529,7 @@ function generateSubscribeParamsImplRust(): string {
 }`;
 }
 
-function generateChangesetOperationTargetRust(project: Project): string {
-  const kind = findEnum(project, 'ChangesetOperationTargetKind');
-  if (!kind) throw new Error('ChangesetOperationTargetKind enum not found');
-  const unknownVariant = getEnumCompatibility(kind) === 'nonexhaustive'
-    ? `    #[serde(untagged)]
-    Unknown(serde_json::Value),
-`
-    : '';
+function generateChangesetOperationTargetRust(): string {
   return `/// Identifies the file or range a \`ChangesetOperation\` should act on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -2018,7 +1547,7 @@ pub enum ChangesetOperationTarget {
         side: Option<String>,
         range: TextRange,
     },
-${unknownVariant}}`;
+}`;
 }
 
 // ─── Notifications File Generator ────────────────────────────────────────────
@@ -2039,7 +1568,7 @@ const NOTIFICATION_STRUCTS = [
 function generateNotificationsFile(project: Project): string {
   const lines: string[] = [GENERATED_HEADER];
   lines.push('#[allow(unused_imports)]');
-  lines.push('use crate::state::{AgentSelection, AnnotationsSummary, ChangesSummary, Changeset, FileEdit, ModelSelection, ProjectInfo, ProtectedResourceMetadata, SessionChatSummary, SessionOrigin, SessionStatus, SessionSummary};');
+  lines.push('use crate::state::{AgentSelection, AnnotationsSummary, ChangesSummary, Changeset, FileEdit, ModelSelection, ProjectInfo, SessionStatus, SessionSummary};');
   lines.push('');
 
   lines.push('// ─── Enums ────────────────────────────────────────────────────────────\n');
@@ -2117,10 +1646,10 @@ pub mod ahp_error_codes {
     /// The operation requires no active turn, but one is in progress.
     pub const TURN_IN_PROGRESS: i32 = -32004;
     /// The server cannot speak any of the protocol versions offered by the
-    /// client in \`InitializeParams.protocolVersions\`; its required data
-    /// payload advertises supported versions.
+    /// client in \`InitializeParams.protocolVersions\`.
     pub const UNSUPPORTED_PROTOCOL_VERSION: i32 = -32005;
-    // -32006 is intentionally reserved and unassigned.
+    /// The requested content URI does not exist.
+    pub const CONTENT_NOT_FOUND: i32 = -32006;
     /// Authentication required for a protected resource.
     pub const AUTH_REQUIRED: i32 = -32007;
     /// The requested file, folder, or URI does not exist.
@@ -2265,7 +1794,7 @@ function generateVersionFile(project: Project): string {
 pub const PROTOCOL_VERSION: &str = ${JSON.stringify(current)};
 
 /// Every protocol version this crate is willing to negotiate, ordered
-/// most-preferred-first, independently of the development [\`PROTOCOL_VERSION\`].
+/// most-preferred-first. The first entry equals [\`PROTOCOL_VERSION\`].
 ///
 /// Consumers building \`InitializeParams\` should pass this slice (or a
 /// derived \`Vec<String>\`) so the same client binary can fall back to
@@ -2273,41 +1802,6 @@ pub const PROTOCOL_VERSION: &str = ${JSON.stringify(current)};
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
 ${supportedLiteral}
 ];
-
-/// Select the highest offered version in a supported caret range.
-/// None means the host must send UnsupportedProtocolVersion and close.
-pub fn negotiate_protocol_version(offered: &[String]) -> Result<Option<&str>, String> {
-    fn parse(version: &str) -> Result<(u64, u64, u64), String> {
-        let invalid = || format!("Invalid protocol version: {version}");
-        let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() != 3 {
-            return Err(invalid());
-        }
-        let mut values = [0; 3];
-        for (index, part) in parts.iter().enumerate() {
-            if part.is_empty() || (part.len() > 1 && part.starts_with('0'))
-                || !part.bytes().all(|byte| byte.is_ascii_digit()) {
-                return Err(invalid());
-            }
-            values[index] = part.parse::<u64>().map_err(|_| invalid())?;
-        }
-        Ok((values[0], values[1], values[2]))
-    }
-    let baselines = SUPPORTED_PROTOCOL_VERSIONS.iter()
-        .map(|version| parse(version)).collect::<Result<Vec<_>, _>>()?;
-    let mut selected: Option<(&str, (u64, u64, u64))> = None;
-    for version in offered {
-        let parts = parse(version)?;
-        if baselines.iter().any(|base| parts.0 == base.0
-            && (parts.0 > 0 || parts.1 == base.1)
-            && (parts.0 > 0 || parts.1 > 0 || parts.2 == base.2)
-            && parts >= *base)
-            && selected.as_ref().map_or(true, |(_, previous)| parts > *previous) {
-            selected = Some((version.as_str(), parts));
-        }
-    }
-    Ok(selected.map(|(version, _)| version))
-}
 `;
 }
 
@@ -2346,7 +1840,6 @@ function checkExhaustiveness(project: Project): void {
     'PaginatedParams',              // base interface; flattened into each paginated command params struct
     'PaginatedResult',              // base interface; flattened into each paginated command result struct
     'StringOrMarkdown',
-    'ToolInput',
     'ToolCallState',
     'StateAction',
     'ActionEnvelope',
@@ -2361,8 +1854,6 @@ function checkExhaustiveness(project: Project): void {
     'ChatToolCallConfirmedAction',  // emitted as merged variant
     'ChatAction',                   // source-only union covered by StateAction
     'ChatOrigin',                   // hand-generated union for inline variants
-    'ChatSource',
-    'ChatMoveDestination',
     'PingParams',
     'TerminalClaim',
     'TerminalContentPart',
@@ -2379,16 +1870,9 @@ function checkExhaustiveness(project: Project): void {
     'McpServerState',              // MCP_SERVER_STATUS_UNION discriminated union
     'ToolCallContributor',          // TOOL_CALL_CONTRIBUTOR_UNION discriminated union
     'ToolCallRiskAssessment',       // TOOL_CALL_RISK_ASSESSMENT_UNION discriminated union
-    'TerminalLifecycleState',       // TERMINAL_LIFECYCLE_STATE_UNION discriminated union
     'SessionInputRequest',          // SESSION_INPUT_REQUEST_UNION discriminated union
-    'BackgroundWork',               // BACKGROUND_WORK_UNION discriminated union
     'ToolCallConfirmationState',    // TOOL_CALL_CONFIRMATION_STATE_UNION discriminated union
     'ReconnectResult',
-    'SessionOrigin',
-    'AutomationTrigger',
-    'AutomationDisableCondition',
-    'AutomationRunOrigin',
-    'AutomationRunLifecycle',
     'AuthRequiredErrorData',
     'PermissionDeniedErrorData',
     'UnsupportedProtocolVersionErrorData',
@@ -2398,7 +1882,6 @@ function checkExhaustiveness(project: Project): void {
     'AhpErrorCodeWithData',
     'JsonRpcErrorCode',
     'ChangesetOperationTarget',
-    'CustomizationEnablement',
   ]);
 
   const missing = [...imported].filter(n => !coveredByLists.has(n) && !knownSpecial.has(n));
